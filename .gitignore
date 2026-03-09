@@ -1,0 +1,25 @@
+*.exe
+*.dll
+*.so
+*.dylib
+
+*.test
+
+# Code coverage profiles and other test artifacts
+*.out
+coverage.*
+*.coverprofile
+profile.cov
+
+
+# Go workspace file
+go.work
+go.work.sum
+
+# env file
+.env
+
+# markdown files
+*.md
+!README.md
+!README
