@@ -1,5 +1,5 @@
 // AES
-package crypto
+package aes
 
 type Word = [4]byte
 

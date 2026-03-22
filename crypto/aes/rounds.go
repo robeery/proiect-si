@@ -1,4 +1,4 @@
-package crypto
+package aes
 
 // SubBytes replaces each byte in the state with its S-box substitute
 // Algorithm: NIST FIPS 197, Section 5.1.1 -> SubBytes

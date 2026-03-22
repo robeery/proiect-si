@@ -1,2 +1,2 @@
 // Diffie-Hellman key exchange protocol
-package crypto
+package dh

@@ -1,4 +1,4 @@
-package crypto
+package aes
 
 // S-box lookup table -> maps each byte to its AES substitute
 // Algorithm: NIST FIPS 197, Section 5.1.1 -> SubBytes
