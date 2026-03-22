@@ -62,6 +62,55 @@ func (a *AES) AddRoundKey(state *State, roundKey [4]Word) {
 	}
 }
 
+// InvSubBytes replaces each byte in the state with its inverse S-box substitute
+// Algorithm: NIST FIPS 197, Section 5.3.2 -> InvSubBytes
+func (a *AES) InvSubBytes(state *State) {
+	for col := 0; col < 4; col++ {
+		for row := 0; row < 4; row++ {
+			state[col][row] = invSbox[state[col][row]]
+		}
+	}
+}
+
+// InvShiftRows rotates each row right by its row index (0, 1, 2, 3)
+// Algorithm: NIST FIPS 197, Section 5.3.1 -> InvShiftRows
+func (a *AES) InvShiftRows(state *State) {
+	// Row 1: shift right by 1
+	state[0][1], state[1][1], state[2][1], state[3][1] =
+		state[3][1], state[0][1], state[1][1], state[2][1]
+
+	// Row 2: shift right by 2
+	state[0][2], state[1][2], state[2][2], state[3][2] =
+		state[2][2], state[3][2], state[0][2], state[1][2]
+
+	// Row 3: shift right by 3 (= shift left by 1)
+	state[0][3], state[1][3], state[2][3], state[3][3] =
+		state[1][3], state[2][3], state[3][3], state[0][3]
+}
+
+// InvMixColumns multiplies each column by the inverse matrix in GF(2^8)
+// Algorithm: NIST FIPS 197, Section 5.3.3 -> InvMixColumns
+//
+// Inverse matrix:
+//
+//	[14 11 13  9]
+//	[ 9 14 11 13]
+//	[13  9 14 11]
+//	[11 13  9 14]
+func (a *AES) InvMixColumns(state *State) {
+	for col := 0; col < 4; col++ {
+		s0 := state[col][0]
+		s1 := state[col][1]
+		s2 := state[col][2]
+		s3 := state[col][3]
+
+		state[col][0] = gfMul(14, s0) ^ gfMul(11, s1) ^ gfMul(13, s2) ^ gfMul(9, s3)
+		state[col][1] = gfMul(9, s0) ^ gfMul(14, s1) ^ gfMul(11, s2) ^ gfMul(13, s3)
+		state[col][2] = gfMul(13, s0) ^ gfMul(9, s1) ^ gfMul(14, s2) ^ gfMul(11, s3)
+		state[col][3] = gfMul(11, s0) ^ gfMul(13, s1) ^ gfMul(9, s2) ^ gfMul(14, s3)
+	}
+}
+
 // gfMul multiplies two bytes in GF(2^8) with irreducible polynomial 0x11B
 // Algorithm: NIST FIPS 197, Section 4.2 -> Multiplication
 // ***Note: addition in GF(2^8) is just XOR (the ^ operator)
