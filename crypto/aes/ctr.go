@@ -6,14 +6,12 @@ import (
 	"errors"
 )
 
-// CTR is the standard interface for AES encryption in this project.
-// It wraps the AES block cipher in CTR (Counter) mode, producing a keystream
-// that is XORed with plaintext — supports arbitrary-length input.
 type CTR struct {
-	cipher *block
+	cipher         *block
+	fixedNonce     *[12]byte // nil = generate randomly per Encrypt call
+	initialCounter uint32
 }
 
-// NewCTR creates a CTR stream cipher from a 16- or 32-byte key.
 func NewCTR(key []byte) (*CTR, error) {
 	b, err := newBlock(key)
 	if err != nil {
@@ -22,26 +20,35 @@ func NewCTR(key []byte) (*CTR, error) {
 	return &CTR{cipher: b}, nil
 }
 
-// Encrypt encrypts src into dst using a freshly generated 12-byte nonce.
-// dst must be at least len(src) bytes.
-// The returned nonce must be passed to Decrypt.
+func NewCTRWithIV(key []byte, iv [16]byte) (*CTR, error) {
+	b, err := newBlock(key)
+	if err != nil {
+		return nil, err
+	}
+	nonce := new([12]byte)
+	copy(nonce[:], iv[:12])
+	initialCounter := binary.BigEndian.Uint32(iv[12:])
+	return &CTR{cipher: b, fixedNonce: nonce, initialCounter: initialCounter}, nil
+}
+
 func (c *CTR) Encrypt(dst, src []byte) (nonce [12]byte, err error) {
+	if c.fixedNonce != nil {
+		nonce = *c.fixedNonce
+		err = c.xorKeystream(dst, src, nonce, c.initialCounter)
+		return nonce, err
+	}
 	if _, err = rand.Read(nonce[:]); err != nil {
 		return nonce, errors.New("aes-ctr: failed to generate nonce")
 	}
-	err = c.xorKeystream(dst, src, nonce)
+	err = c.xorKeystream(dst, src, nonce, 0)
 	return nonce, err
 }
 
-// Decrypt decrypts src into dst using the nonce returned by Encrypt.
-// dst must be at least len(src) bytes.
 func (c *CTR) Decrypt(dst, src []byte, nonce [12]byte) error {
-	return c.xorKeystream(dst, src, nonce)
+	return c.xorKeystream(dst, src, nonce, c.initialCounter)
 }
 
-// xorKeystream XORs src into dst using AES-CTR starting at counter=0.
-// Counter block layout: [ nonce(12 bytes) | counter(4 bytes big-endian) ]
-func (c *CTR) xorKeystream(dst, src []byte, nonce [12]byte) error {
+func (c *CTR) xorKeystream(dst, src []byte, nonce [12]byte, initialCounter uint32) error {
 	if len(dst) < len(src) {
 		return errors.New("aes-ctr: dst too small")
 	}
@@ -50,7 +57,7 @@ func (c *CTR) xorKeystream(dst, src []byte, nonce [12]byte) error {
 	copy(counterBlock[:12], nonce[:])
 
 	var keystream [16]byte
-	var counter uint32
+	counter := initialCounter
 
 	for len(src) > 0 {
 		binary.BigEndian.PutUint32(counterBlock[12:], counter)

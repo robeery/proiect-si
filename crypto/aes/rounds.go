@@ -121,10 +121,12 @@ func gfMul(a, b byte) byte {
 		if a&1 != 0 {
 			res ^= b
 		}
+		// Save the high bit before shifting (it overflows out of the byte)
+		hi := b & 0x80
 		// Multiply b by x (shift left)
 		b <<= 1
-		// Reduce modulo the AES polynomial 0x11B
-		if b&0x80 != 0 {
+		// Reduce modulo the AES polynomial 0x11B if the high bit was set
+		if hi != 0 {
 			b ^= 0x1b
 		}
 		// Next bit of a
