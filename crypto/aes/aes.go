@@ -1,28 +1,27 @@
 // AES
 package aes
 
-type Word = [4]byte
+type word = [4]byte
 
-type State = [4][4]byte
+type state = [4][4]byte
 
 type KeyScheduler interface {
-	ExpandKey(key []byte) ([][4]Word, error)
+	expandKey(key []byte) ([][4]word, error)
 }
 
 type BlockCipher interface {
-	SubBytes(state *State)
-	ShiftRows(state *State)
-	MixColumns(state *State)
-	AddRoundKey(state *State, roundKey [4]Word)
-	InvSubBytes(state *State)
-	InvShiftRows(state *State)
-	InvMixColumns(state *State)
+	subBytes(s *state)
+	shiftRows(s *state)
+	mixColumns(s *state)
+	addRoundKey(s *state, roundKey [4]word)
+	invSubBytes(s *state)
+	invShiftRows(s *state)
+	invMixColumns(s *state)
+	encrypt(dst, src []byte) error
+	decrypt(dst, src []byte) error
 }
 
-type AESCipher interface {
-	KeySize() int
-	NumRounds() int
-	BlockSize() int
-	Encrypt(dst, src []byte) error
-	Decrypt(dst, src []byte) error
+type Cipher interface {
+	Encrypt(dst, src []byte) (nonce [12]byte, err error)
+	Decrypt(dst, src []byte, nonce [12]byte) error
 }

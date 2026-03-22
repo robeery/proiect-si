@@ -2,32 +2,32 @@ package aes
 
 import "errors"
 
-// AES cipher - holds the round keys derived from the original key
-type AES struct {
-	roundKeys [][4]Word
+// block is the AES block cipher — holds the round keys derived from the original key
+type block struct {
+	roundKeys [][4]word
 	nk        int // words in the key: 4 for AES-128, 8 for AES-256
 	nr        int // number of rounds: 10 for AES-128, 14 for AES-256
 }
 
-// NewAES builds an AES cipher from a 16- or 32-byte key
-func NewAES(key []byte) (*AES, error) {
+// newBlock builds an AES block cipher from a 16- or 32-byte key
+func newBlock(key []byte) (*block, error) {
 	nk := len(key) / 4
 	if len(key)%4 != 0 || (nk != 4 && nk != 8) {
 		return nil, errors.New("aes: key must be 16 or 32 bytes")
 	}
 	nr := 6 + nk
-	a := &AES{nk: nk, nr: nr}
+	b := &block{nk: nk, nr: nr}
 	var err error
-	a.roundKeys, err = a.ExpandKey(key)
+	b.roundKeys, err = b.expandKey(key)
 	if err != nil {
 		return nil, err
 	}
-	return a, nil
+	return b, nil
 }
 
-// ExpandKey derives Nr+1 round keys from the original key
+// expandKey derives Nr+1 round keys from the original key
 // Algorithm: NIST FIPS 197, Section 5.2 -> KeyExpansion
-func (a *AES) ExpandKey(key []byte) ([][4]Word, error) {
+func (b *block) expandKey(key []byte) ([][4]word, error) {
 	nk := len(key) / 4
 	if len(key)%4 != 0 || (nk != 4 && nk != 8) {
 		return nil, errors.New("aes: key must be 16 or 32 bytes")
@@ -35,11 +35,11 @@ func (a *AES) ExpandKey(key []byte) ([][4]Word, error) {
 	nr := 6 + nk
 	total := 4 * (nr + 1)
 
-	w := make([]Word, total)
+	w := make([]word, total)
 
 	// Copy the original key into the first Nk words
 	for i := 0; i < nk; i++ {
-		w[i] = Word{key[4*i], key[4*i+1], key[4*i+2], key[4*i+3]}
+		w[i] = word{key[4*i], key[4*i+1], key[4*i+2], key[4*i+3]}
 	}
 
 	// Derive the rest one word at a time
@@ -60,23 +60,23 @@ func (a *AES) ExpandKey(key []byte) ([][4]Word, error) {
 	}
 
 	// Pack every 4 words into one round key
-	roundKeys := make([][4]Word, nr+1)
+	roundKeys := make([][4]word, nr+1)
 	for i := 0; i <= nr; i++ {
-		roundKeys[i] = [4]Word{w[4*i], w[4*i+1], w[4*i+2], w[4*i+3]}
+		roundKeys[i] = [4]word{w[4*i], w[4*i+1], w[4*i+2], w[4*i+3]}
 	}
 	return roundKeys, nil
 }
 
-func (a *AES) KeySize() int   { return a.nk * 4 }
-func (a *AES) NumRounds() int { return a.nr }
-func (a *AES) BlockSize() int { return 16 }
+func (b *block) keySize() int   { return b.nk * 4 }
+func (b *block) numRounds() int { return b.nr }
+func (b *block) blockSize() int { return 16 }
 
 // rotWord shifts bytes left by one
-func rotWord(w Word) Word {
-	return Word{w[1], w[2], w[3], w[0]}
+func rotWord(w word) word {
+	return word{w[1], w[2], w[3], w[0]}
 }
 
 // subWord runs each byte of a word through the S-box
-func subWord(w Word) Word {
-	return Word{sbox[w[0]], sbox[w[1]], sbox[w[2]], sbox[w[3]]}
+func subWord(w word) word {
+	return word{sbox[w[0]], sbox[w[1]], sbox[w[2]], sbox[w[3]]}
 }

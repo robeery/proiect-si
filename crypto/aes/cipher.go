@@ -2,81 +2,81 @@ package aes
 
 import "errors"
 
-// Encrypt encrypts a single 16-byte block from src into dst
+// encrypt encrypts a single 16-byte block from src into dst
 // Algorithm: NIST FIPS 197, Section 5.1 -> Cipher
-func (a *AES) Encrypt(dst, src []byte) error {
+func (b *block) encrypt(dst, src []byte) error {
 	if len(src) != 16 || len(dst) < 16 {
 		return errors.New("aes: block must be 16 bytes")
 	}
 
 	// Load input bytes into state (column-major)
-	var state State
+	var s state
 	for col := 0; col < 4; col++ {
 		for row := 0; row < 4; row++ {
-			state[col][row] = src[col*4+row]
+			s[col][row] = src[col*4+row]
 		}
 	}
 
 	// Initial round key
-	a.AddRoundKey(&state, a.roundKeys[0])
+	b.addRoundKey(&s, b.roundKeys[0])
 
-	// Main rounds: SubBytes -> ShiftRows -> MixColumns -> AddRoundKey
-	for round := 1; round < a.nr; round++ {
-		a.SubBytes(&state)
-		a.ShiftRows(&state)
-		a.MixColumns(&state)
-		a.AddRoundKey(&state, a.roundKeys[round])
+	// Main rounds: subBytes -> shiftRows -> mixColumns -> addRoundKey
+	for round := 1; round < b.nr; round++ {
+		b.subBytes(&s)
+		b.shiftRows(&s)
+		b.mixColumns(&s)
+		b.addRoundKey(&s, b.roundKeys[round])
 	}
 
-	// Final round (no MixColumns)
-	a.SubBytes(&state)
-	a.ShiftRows(&state)
-	a.AddRoundKey(&state, a.roundKeys[a.nr])
+	// Final round (no mixColumns)
+	b.subBytes(&s)
+	b.shiftRows(&s)
+	b.addRoundKey(&s, b.roundKeys[b.nr])
 
 	// Write state to output (column-major)
 	for col := 0; col < 4; col++ {
 		for row := 0; row < 4; row++ {
-			dst[col*4+row] = state[col][row]
+			dst[col*4+row] = s[col][row]
 		}
 	}
 	return nil
 }
 
-// Decrypt decrypts a single 16-byte block from src into dst
+// decrypt decrypts a single 16-byte block from src into dst
 // Algorithm: NIST FIPS 197, Section 5.3 -> InvCipher
-func (a *AES) Decrypt(dst, src []byte) error {
+func (b *block) decrypt(dst, src []byte) error {
 	if len(src) != 16 || len(dst) < 16 {
 		return errors.New("aes: block must be 16 bytes")
 	}
 
 	// Load input bytes into state (column-major)
-	var state State
+	var s state
 	for col := 0; col < 4; col++ {
 		for row := 0; row < 4; row++ {
-			state[col][row] = src[col*4+row]
+			s[col][row] = src[col*4+row]
 		}
 	}
 
 	// Initial round key (last one)
-	a.AddRoundKey(&state, a.roundKeys[a.nr])
+	b.addRoundKey(&s, b.roundKeys[b.nr])
 
-	// Main rounds: InvShiftRows -> InvSubBytes -> AddRoundKey -> InvMixColumns
-	for round := a.nr - 1; round >= 1; round-- {
-		a.InvShiftRows(&state)
-		a.InvSubBytes(&state)
-		a.AddRoundKey(&state, a.roundKeys[round])
-		a.InvMixColumns(&state)
+	// Main rounds: invShiftRows -> invSubBytes -> addRoundKey -> invMixColumns
+	for round := b.nr - 1; round >= 1; round-- {
+		b.invShiftRows(&s)
+		b.invSubBytes(&s)
+		b.addRoundKey(&s, b.roundKeys[round])
+		b.invMixColumns(&s)
 	}
 
-	// Final round (no InvMixColumns)
-	a.InvShiftRows(&state)
-	a.InvSubBytes(&state)
-	a.AddRoundKey(&state, a.roundKeys[0])
+	// Final round (no invMixColumns)
+	b.invShiftRows(&s)
+	b.invSubBytes(&s)
+	b.addRoundKey(&s, b.roundKeys[0])
 
 	// Write state to output (column-major)
 	for col := 0; col < 4; col++ {
 		for row := 0; row < 4; row++ {
-			dst[col*4+row] = state[col][row]
+			dst[col*4+row] = s[col][row]
 		}
 	}
 	return nil

@@ -1,34 +1,34 @@
 package aes
 
-// SubBytes replaces each byte in the state with its S-box substitute
+// subBytes replaces each byte in the state with its S-box substitute
 // Algorithm: NIST FIPS 197, Section 5.1.1 -> SubBytes
-func (a *AES) SubBytes(state *State) {
+func (b *block) subBytes(s *state) {
 	for col := 0; col < 4; col++ {
 		for row := 0; row < 4; row++ {
-			state[col][row] = sbox[state[col][row]]
+			s[col][row] = sbox[s[col][row]]
 		}
 	}
 }
 
-// ShiftRows rotates each row left by its row index (0, 1, 2, 3)
+// shiftRows rotates each row left by its row index (0, 1, 2, 3)
 // Algorithm: NIST FIPS 197, Section 5.1.2 -> ShiftRows
 
-// State is column-major: State[col][row]
-func (a *AES) ShiftRows(state *State) {
+// state is column-major: state[col][row]
+func (b *block) shiftRows(s *state) {
 	// Row 1: shift left by 1
-	state[0][1], state[1][1], state[2][1], state[3][1] =
-		state[1][1], state[2][1], state[3][1], state[0][1]
+	s[0][1], s[1][1], s[2][1], s[3][1] =
+		s[1][1], s[2][1], s[3][1], s[0][1]
 
 	// Row 2: shift left by 2
-	state[0][2], state[1][2], state[2][2], state[3][2] =
-		state[2][2], state[3][2], state[0][2], state[1][2]
+	s[0][2], s[1][2], s[2][2], s[3][2] =
+		s[2][2], s[3][2], s[0][2], s[1][2]
 
 	// Row 3: shift left by 3 (= shift right by 1)
-	state[0][3], state[1][3], state[2][3], state[3][3] =
-		state[3][3], state[0][3], state[1][3], state[2][3]
+	s[0][3], s[1][3], s[2][3], s[3][3] =
+		s[3][3], s[0][3], s[1][3], s[2][3]
 }
 
-// MixColumns multiplies each column by a fixed matrix in GF(2^8)
+// mixColumns multiplies each column by a fixed matrix in GF(2^8)
 // Algorithm: NIST FIPS 197, Section 5.1.3 -> MixColumns
 
 // Matrix:
@@ -37,58 +37,58 @@ func (a *AES) ShiftRows(state *State) {
 //	[1 2 3 1]
 //	[1 1 2 3]
 //	[3 1 1 2]
-func (a *AES) MixColumns(state *State) {
+func (b *block) mixColumns(s *state) {
 	for col := 0; col < 4; col++ {
-		s0 := state[col][0]
-		s1 := state[col][1]
-		s2 := state[col][2]
-		s3 := state[col][3]
+		s0 := s[col][0]
+		s1 := s[col][1]
+		s2 := s[col][2]
+		s3 := s[col][3]
 
-		state[col][0] = gfMul(2, s0) ^ gfMul(3, s1) ^ s2 ^ s3
-		state[col][1] = s0 ^ gfMul(2, s1) ^ gfMul(3, s2) ^ s3
-		state[col][2] = s0 ^ s1 ^ gfMul(2, s2) ^ gfMul(3, s3)
-		state[col][3] = gfMul(3, s0) ^ s1 ^ s2 ^ gfMul(2, s3)
+		s[col][0] = gfMul(2, s0) ^ gfMul(3, s1) ^ s2 ^ s3
+		s[col][1] = s0 ^ gfMul(2, s1) ^ gfMul(3, s2) ^ s3
+		s[col][2] = s0 ^ s1 ^ gfMul(2, s2) ^ gfMul(3, s3)
+		s[col][3] = gfMul(3, s0) ^ s1 ^ s2 ^ gfMul(2, s3)
 	}
 }
 
-// AddRoundKey XORs the state with a round key
+// addRoundKey XORs the state with a round key
 // Algorithm: NIST FIPS 197, Section 5.1.4 -> AddRoundKey
-func (a *AES) AddRoundKey(state *State, roundKey [4]Word) {
+func (b *block) addRoundKey(s *state, roundKey [4]word) {
 	for col := 0; col < 4; col++ {
-		state[col][0] ^= roundKey[col][0]
-		state[col][1] ^= roundKey[col][1]
-		state[col][2] ^= roundKey[col][2]
-		state[col][3] ^= roundKey[col][3]
+		s[col][0] ^= roundKey[col][0]
+		s[col][1] ^= roundKey[col][1]
+		s[col][2] ^= roundKey[col][2]
+		s[col][3] ^= roundKey[col][3]
 	}
 }
 
-// InvSubBytes replaces each byte in the state with its inverse S-box substitute
+// invSubBytes replaces each byte in the state with its inverse S-box substitute
 // Algorithm: NIST FIPS 197, Section 5.3.2 -> InvSubBytes
-func (a *AES) InvSubBytes(state *State) {
+func (b *block) invSubBytes(s *state) {
 	for col := 0; col < 4; col++ {
 		for row := 0; row < 4; row++ {
-			state[col][row] = invSbox[state[col][row]]
+			s[col][row] = invSbox[s[col][row]]
 		}
 	}
 }
 
-// InvShiftRows rotates each row right by its row index (0, 1, 2, 3)
+// invShiftRows rotates each row right by its row index (0, 1, 2, 3)
 // Algorithm: NIST FIPS 197, Section 5.3.1 -> InvShiftRows
-func (a *AES) InvShiftRows(state *State) {
+func (b *block) invShiftRows(s *state) {
 	// Row 1: shift right by 1
-	state[0][1], state[1][1], state[2][1], state[3][1] =
-		state[3][1], state[0][1], state[1][1], state[2][1]
+	s[0][1], s[1][1], s[2][1], s[3][1] =
+		s[3][1], s[0][1], s[1][1], s[2][1]
 
 	// Row 2: shift right by 2
-	state[0][2], state[1][2], state[2][2], state[3][2] =
-		state[2][2], state[3][2], state[0][2], state[1][2]
+	s[0][2], s[1][2], s[2][2], s[3][2] =
+		s[2][2], s[3][2], s[0][2], s[1][2]
 
 	// Row 3: shift right by 3 (= shift left by 1)
-	state[0][3], state[1][3], state[2][3], state[3][3] =
-		state[1][3], state[2][3], state[3][3], state[0][3]
+	s[0][3], s[1][3], s[2][3], s[3][3] =
+		s[1][3], s[2][3], s[3][3], s[0][3]
 }
 
-// InvMixColumns multiplies each column by the inverse matrix in GF(2^8)
+// invMixColumns multiplies each column by the inverse matrix in GF(2^8)
 // Algorithm: NIST FIPS 197, Section 5.3.3 -> InvMixColumns
 //
 // Inverse matrix:
@@ -97,17 +97,17 @@ func (a *AES) InvShiftRows(state *State) {
 //	[ 9 14 11 13]
 //	[13  9 14 11]
 //	[11 13  9 14]
-func (a *AES) InvMixColumns(state *State) {
+func (b *block) invMixColumns(s *state) {
 	for col := 0; col < 4; col++ {
-		s0 := state[col][0]
-		s1 := state[col][1]
-		s2 := state[col][2]
-		s3 := state[col][3]
+		s0 := s[col][0]
+		s1 := s[col][1]
+		s2 := s[col][2]
+		s3 := s[col][3]
 
-		state[col][0] = gfMul(14, s0) ^ gfMul(11, s1) ^ gfMul(13, s2) ^ gfMul(9, s3)
-		state[col][1] = gfMul(9, s0) ^ gfMul(14, s1) ^ gfMul(11, s2) ^ gfMul(13, s3)
-		state[col][2] = gfMul(13, s0) ^ gfMul(9, s1) ^ gfMul(14, s2) ^ gfMul(11, s3)
-		state[col][3] = gfMul(11, s0) ^ gfMul(13, s1) ^ gfMul(9, s2) ^ gfMul(14, s3)
+		s[col][0] = gfMul(14, s0) ^ gfMul(11, s1) ^ gfMul(13, s2) ^ gfMul(9, s3)
+		s[col][1] = gfMul(9, s0) ^ gfMul(14, s1) ^ gfMul(11, s2) ^ gfMul(13, s3)
+		s[col][2] = gfMul(13, s0) ^ gfMul(9, s1) ^ gfMul(14, s2) ^ gfMul(11, s3)
+		s[col][3] = gfMul(11, s0) ^ gfMul(13, s1) ^ gfMul(9, s2) ^ gfMul(14, s3)
 	}
 }
 
