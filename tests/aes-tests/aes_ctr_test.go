@@ -1,4 +1,4 @@
-package tests
+package aestests
 
 import (
 	"bytes"
@@ -149,8 +149,6 @@ func TestCTRBlocksNIST(t *testing.T) {
 		})
 	}
 }
-
-// ── Round-trip tests ──────────────────────────────────────────────────────────
 
 // TestCTRRoundTrip verifies Decrypt(Encrypt(msg)) == msg with a random nonce.
 func TestCTRRoundTrip(t *testing.T) {
