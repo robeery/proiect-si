@@ -5,7 +5,7 @@ package aes
 func (b *block) subBytes(s *state) {
 	for col := 0; col < 4; col++ {
 		for row := 0; row < 4; row++ {
-			s[col][row] = sbox[s[col][row]]
+			s[col][row] = ctSboxLookup(&sbox, s[col][row])
 		}
 	}
 }
@@ -67,7 +67,7 @@ func (b *block) addRoundKey(s *state, roundKey [4]word) {
 func (b *block) invSubBytes(s *state) {
 	for col := 0; col < 4; col++ {
 		for row := 0; row < 4; row++ {
-			s[col][row] = invSbox[s[col][row]]
+			s[col][row] = ctSboxLookup(&invSbox, s[col][row])
 		}
 	}
 }
@@ -113,7 +113,6 @@ func (b *block) invMixColumns(s *state) {
 
 // gfMul multiplies two bytes in GF(2^8) with irreducible polynomial 0x11B
 // Algorithm: NIST FIPS 197, Section 4.2 -> Multiplication
-// ***Note: addition in GF(2^8) is just XOR (the ^ operator)
 func gfMul(a, b byte) byte {
 	var res byte
 	for a > 0 {

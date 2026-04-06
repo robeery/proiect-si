@@ -46,11 +46,9 @@ func (b *block) expandKey(key []byte) ([][4]word, error) {
 	for i := nk; i < total; i++ {
 		temp := w[i-1]
 		if i%nk == 0 {
-			// Every Nk words: rotate, substitute, mix in the round constant
 			temp = subWord(rotWord(temp))
 			temp[0] ^= rcon[i/nk]
 		} else if nk > 6 && i%nk == 4 {
-			// AES-256 only: extra substitution halfway through each key block
 			temp = subWord(temp)
 		}
 		w[i][0] = w[i-nk][0] ^ temp[0]
@@ -71,12 +69,10 @@ func (b *block) keySize() int   { return b.nk * 4 }
 func (b *block) numRounds() int { return b.nr }
 func (b *block) blockSize() int { return 16 }
 
-// rotWord shifts bytes left by one
 func rotWord(w word) word {
 	return word{w[1], w[2], w[3], w[0]}
 }
 
-// subWord runs each byte of a word through the S-box
 func subWord(w word) word {
-	return word{sbox[w[0]], sbox[w[1]], sbox[w[2]], sbox[w[3]]}
+	return word{ctSboxLookup(&sbox, w[0]), ctSboxLookup(&sbox, w[1]), ctSboxLookup(&sbox, w[2]), ctSboxLookup(&sbox, w[3])}
 }

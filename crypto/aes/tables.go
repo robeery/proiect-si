@@ -51,3 +51,20 @@ var rcon = [11]byte{
 	0x01, 0x02, 0x04, 0x08, 0x10,
 	0x20, 0x40, 0x80, 0x1b, 0x36,
 }
+
+// ctEq returns 0xFF if a == b, 0x00 otherwise — branchless, constant-time.
+func ctEq(a, b byte) byte {
+	x := uint16(a ^ b)
+	notEq := byte((x | (0 - x)) >> 15) // 1 if not equal, 0 if equal
+	return notEq - 1                   // 0xFF if equal, 0x00 if not
+}
+
+// ctSboxLookup returns table[idx] in constant time.
+func ctSboxLookup(table *[256]byte, idx byte) byte {
+	var result byte
+	for i := 0; i < 256; i++ {
+		mask := ctEq(byte(i), idx) // 0xFF on match, 0x00 otherwise
+		result |= mask & table[i]
+	}
+	return result
+}
