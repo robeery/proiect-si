@@ -6,8 +6,7 @@ import (
 	"io"
 )
 
-// MaxFrameSize bounds frame body size to prevent a malicious or buggy peer
-// from forcing unbounded allocation in ReadFrame.
+// MaxFrameSize caps frame body size so a bad peer cant force unbounded allocation in ReadFrame
 const MaxFrameSize = 16 << 20
 
 var ErrFrameTooLarge = errors.New("transport: frame exceeds MaxFrameSize")

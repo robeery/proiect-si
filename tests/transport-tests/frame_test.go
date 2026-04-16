@@ -88,8 +88,7 @@ func TestFrameOversizeWrite(t *testing.T) {
 	}
 }
 
-// Hand-craft a header claiming a body larger than MaxFrameSize and confirm
-// the reader rejects it without attempting to allocate.
+// header claims more than MaxFrameSize, reader should reject without allocating
 func TestFrameOversizeRead(t *testing.T) {
 	buf := bytes.NewReader([]byte{0xFF, 0xFF, 0xFF, 0xFF})
 	_, err := transport.ReadFrame(buf)
@@ -107,8 +106,8 @@ func TestFrameTruncatedHeader(t *testing.T) {
 }
 
 func TestFrameTruncatedBody(t *testing.T) {
-	body := []byte{0x00, 0x00, 0x00, 0x64} // header claims 100 bytes
-	body = append(body, []byte("short")...) // only 5 follow
+	body := []byte{0x00, 0x00, 0x00, 0x64} // header says 100 bytes
+	body = append(body, []byte("short")...) // only 5 bytes follow
 	buf := bytes.NewReader(body)
 	_, err := transport.ReadFrame(buf)
 	if !errors.Is(err, io.ErrUnexpectedEOF) {
