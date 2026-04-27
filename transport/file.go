@@ -14,6 +14,16 @@ const ChunkSize = 64 << 10 // 64 KiB
 // SendFile splits path into ChunkSize chunks, sends FILE_META then all
 // FILE_CHUNK messages then FILE_DONE with a SHA-256 of the whole file
 func SendFile(p *Peer, path string) error {
+	return sendFile(p, path, nil)
+}
+
+// SendFileWithProgress is like SendFile but calls onProgress after each chunk
+// onProgress receives (chunksSent, totalChunks)
+func SendFileWithProgress(p *Peer, path string, onProgress func(sent, total uint32)) error {
+	return sendFile(p, path, onProgress)
+}
+
+func sendFile(p *Peer, path string, onProgress func(sent, total uint32)) error {
 	f, err := os.Open(path)
 	if err != nil {
 		return err
@@ -63,6 +73,9 @@ func SendFile(p *Peer, path string) error {
 				return err
 			}
 			index++
+			if onProgress != nil {
+				onProgress(index, totalChunks)
+			}
 		}
 		if readErr == io.EOF {
 			break

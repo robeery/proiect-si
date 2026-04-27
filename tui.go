@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	colorful "github.com/lucasb-eyer/go-colorful"
 
 	"proiect-si/transport"
 )
@@ -19,23 +20,30 @@ type fileSentEvent struct {
 	path string
 	err  error
 }
+type fileProgressEvent struct {
+	sent  uint32
+	total uint32
+}
 
 var (
-	styleSystem  = lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Italic(true)
-	styleYou     = lipgloss.NewStyle().Foreground(lipgloss.Color("86")).Bold(true)
-	stylePeer    = lipgloss.NewStyle().Foreground(lipgloss.Color("213")).Bold(true)
-	styleHeader  = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
-	styleDivider = lipgloss.NewStyle().Foreground(lipgloss.Color("236"))
+	styleSystem   = lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Italic(true)
+	styleYou      = lipgloss.NewStyle().Foreground(lipgloss.Color("#00FFFF")).Bold(true)
+	stylePeer     = lipgloss.NewStyle().Foreground(lipgloss.Color("#FF69B4")).Bold(true)
+	styleHeader   = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
+	styleDivider  = lipgloss.NewStyle().Foreground(lipgloss.Color("236"))
+	styleProgress = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
 )
 
 type tuiModel struct {
-	peer     *transport.Peer
-	viewport viewport.Model
-	input    textinput.Model
-	recvr    *transport.FileReceiver
-	lines    []string
-	width    int
-	height   int
+	peer       *transport.Peer
+	viewport   viewport.Model
+	input      textinput.Model
+	recvr      *transport.FileReceiver
+	lines      []string
+	progressCh <-chan fileProgressEvent // nil when no transfer in progress
+	progress   string                  // rendered progress bar line, empty when idle
+	width      int
+	height     int
 }
 
 func newTUIModel(p *transport.Peer, recvDir string) tuiModel {
@@ -70,10 +78,27 @@ func listenForMsg(ch <-chan []byte) tea.Cmd {
 	}
 }
 
-// sendFileCmd runs SendFile in a background goroutine so the TUI stays responsive
-func sendFileCmd(p *transport.Peer, path string) tea.Cmd {
+// listenFileProgress waits for one progress update from the channel
+// when the channel closes it returns nil which Bubble Tea ignores
+func listenFileProgress(ch <-chan fileProgressEvent) tea.Cmd {
 	return func() tea.Msg {
-		return fileSentEvent{path: path, err: transport.SendFile(p, path)}
+		ev, ok := <-ch
+		if !ok {
+			return nil
+		}
+		return ev
+	}
+}
+
+// sendFileCmd runs SendFileWithProgress in a background goroutine
+// progress updates are pushed to progressCh; fileSentEvent is returned when done
+func sendFileCmd(p *transport.Peer, path string, progressCh chan fileProgressEvent) tea.Cmd {
+	return func() tea.Msg {
+		err := transport.SendFileWithProgress(p, path, func(sent, total uint32) {
+			progressCh <- fileProgressEvent{sent, total}
+		})
+		close(progressCh)
+		return fileSentEvent{path: path, err: err}
 	}
 }
 
@@ -85,8 +110,8 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		// header + 2 dividers + input = 4 rows reserved
-		vpHeight := msg.Height - 4
+		// header + 2 dividers + progress line + input = 5 rows reserved
+		vpHeight := msg.Height - 5
 		if vpHeight < 1 {
 			vpHeight = 1
 		}
@@ -125,7 +150,15 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m = m.appendLine(styleSystem.Render("connection closed"))
 		return m, tea.Quit
 
+	case fileProgressEvent:
+		if m.progressCh != nil {
+			cmds = append(cmds, listenFileProgress(m.progressCh))
+		}
+		m.progress = renderProgressBar(msg.sent, msg.total, m.width-2)
+
 	case fileSentEvent:
+		m.progress = ""
+		m.progressCh = nil
 		if msg.err != nil {
 			m = m.appendLine(styleSystem.Render(fmt.Sprintf("sendfile error: %v", msg.err)))
 		} else {
@@ -151,7 +184,10 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case strings.HasPrefix(line, "/sendfile "):
 				path := strings.TrimPrefix(line, "/sendfile ")
 				m = m.appendLine(styleSystem.Render(fmt.Sprintf("sending %s...", path)))
-				cmds = append(cmds, sendFileCmd(m.peer, path))
+				progressCh := make(chan fileProgressEvent, 8)
+				m.progressCh = progressCh
+				cmds = append(cmds, sendFileCmd(m.peer, path, progressCh))
+				cmds = append(cmds, listenFileProgress(progressCh))
 			default:
 				label := styleYou.Render("[you]")
 				m = m.appendLine(label + " " + line)
@@ -178,11 +214,13 @@ func (m tuiModel) View() string {
 		return "initializing..."
 	}
 	divider := styleDivider.Render(strings.Repeat("─", m.width))
-	header := styleHeader.Render(fmt.Sprintf("peer: %s", m.peer.RemoteAddr()))
-	return header + "\n" +
+	title := gradientText("gommunication")
+	peer := styleHeader.Render(fmt.Sprintf("  peer: %s", m.peer.RemoteAddr()))
+	return title + peer + "\n" +
 		divider + "\n" +
 		m.viewport.View() + "\n" +
 		divider + "\n" +
+		m.progress + "\n" +
 		m.input.View()
 }
 
@@ -196,4 +234,50 @@ func (m tuiModel) appendLine(s string) tuiModel {
 
 func joinLines(lines []string) string {
 	return strings.Join(lines, "\n")
+}
+
+var (
+	gradientCyan, _ = colorful.Hex("#00FFFF")
+	gradientPink, _ = colorful.Hex("#FF69B4")
+)
+
+// renderProgressBar renders a cyan-to-pink gradient bar
+func renderProgressBar(sent, total uint32, width int) string {
+	if total == 0 {
+		return ""
+	}
+	pct := float64(sent) / float64(total)
+	barWidth := width / 2
+	if barWidth < 8 {
+		barWidth = 8
+	}
+	filled := int(pct * float64(barWidth))
+
+	var bar strings.Builder
+	for i := range barWidth {
+		if i < filled {
+			t := float64(i) / float64(barWidth-1)
+			c := gradientCyan.BlendHcl(gradientPink, t)
+			bar.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color(c.Hex())).Render("█"))
+		} else {
+			bar.WriteString(styleDivider.Render("░"))
+		}
+	}
+
+	pink := lipgloss.NewStyle().Foreground(lipgloss.Color("#FF69B4"))
+	suffix := pink.Render(fmt.Sprintf(" %d/%d chunks (%.0f%%)", sent, total, pct*100))
+	return "[" + bar.String() + "]" + suffix
+}
+
+// gradientText renders s with a per-character cyan-to-pink gradient
+func gradientText(s string) string {
+	runes := []rune(s)
+	n := len(runes)
+	var b strings.Builder
+	for i, r := range runes {
+		t := float64(i) / float64(n-1)
+		c := gradientCyan.BlendHcl(gradientPink, t)
+		b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color(c.Hex())).Bold(true).Render(string(r)))
+	}
+	return b.String()
 }
