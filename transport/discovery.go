@@ -7,12 +7,13 @@ import (
 )
 
 const (
-	multicastGroup   = "239.255.0.1:9999"
+	broadcastAddr    = "255.255.255.255:9999"
+	listenAddr       = "0.0.0.0:9999"
 	announceInterval = 2 * time.Second
 )
 
-// Announcer sends our TCP listen address to the LAN multicast group every 2s
-// so dialers can find us without knowing our IP in advance
+// Announcer sends our TCP listen address as a UDP broadcast every 2s
+// so dialers on the same LAN can find us without knowing our IP
 type Announcer struct {
 	conn *net.UDPConn
 	port int
@@ -21,10 +22,11 @@ type Announcer struct {
 }
 
 func NewAnnouncer(tcpPort int) (*Announcer, error) {
-	dst, err := net.ResolveUDPAddr("udp4", multicastGroup)
+	dst, err := net.ResolveUDPAddr("udp4", broadcastAddr)
 	if err != nil {
 		return nil, err
 	}
+	// SO_BROADCAST is required to send to 255.255.255.255
 	conn, err := net.DialUDP("udp4", nil, dst)
 	if err != nil {
 		return nil, err
@@ -69,14 +71,14 @@ func (a *Announcer) announce() {
 	a.conn.Write([]byte(msg))
 }
 
-// Discover joins the multicast group and blocks until it receives one announcement
-// returns the TCP address of the discovered peer
+// Discover listens for a UDP broadcast announcement and returns the TCP address
+// of the first peer found
 func Discover() (string, error) {
-	group, err := net.ResolveUDPAddr("udp4", multicastGroup)
+	addr, err := net.ResolveUDPAddr("udp4", listenAddr)
 	if err != nil {
 		return "", err
 	}
-	conn, err := net.ListenMulticastUDP("udp4", nil, group)
+	conn, err := net.ListenUDP("udp4", addr)
 	if err != nil {
 		return "", err
 	}
