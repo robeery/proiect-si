@@ -1,0 +1,26 @@
+services:
+  listener:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    command: ["listen", "--port", "9001"]
+    networks:
+      - peernetwork
+    stdin_open: true
+    tty: true
+
+  dialer:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    command: ["dial", "--peer", "listener:9001"]
+    networks:
+      - peernetwork
+    stdin_open: true
+    tty: true
+    depends_on:
+      - listener
+
+networks:
+  peernetwork:
+    driver: bridge
