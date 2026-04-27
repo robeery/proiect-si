@@ -28,8 +28,8 @@ func main() {
 
 func usage() {
 	fmt.Fprintf(os.Stderr, "usage:\n")
-	fmt.Fprintf(os.Stderr, "  %s listen --port <port>\n", os.Args[0])
-	fmt.Fprintf(os.Stderr, "  %s dial   --peer <host:port>\n", os.Args[0])
+	fmt.Fprintf(os.Stderr, "  %s listen [--port <port>]\n", os.Args[0])
+	fmt.Fprintf(os.Stderr, "  %s dial   [--peer <host:port>]   omit --peer to discover via LAN multicast\n", os.Args[0])
 }
 
 func cmdListen(args []string) {
@@ -44,6 +44,15 @@ func cmdListen(args []string) {
 	}
 	fmt.Printf("listening on %s, waiting for peer...\n", l.Addr())
 
+	ann, err := transport.NewAnnouncer(*port)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "discovery: %v (LAN announce disabled)\n", err)
+	} else {
+		ann.Start()
+		defer ann.Stop()
+		fmt.Println("announcing on LAN multicast")
+	}
+
 	peer, ok := <-l.Accept()
 	l.Close()
 	if !ok {
@@ -51,17 +60,23 @@ func cmdListen(args []string) {
 		os.Exit(1)
 	}
 
-	runTUI(peer, ".")
+	runTUI(peer, "exchanged")
 }
 
 func cmdDial(args []string) {
 	fs := flag.NewFlagSet("dial", flag.ExitOnError)
-	addr := fs.String("peer", "", "peer address (host:port)")
+	addr := fs.String("peer", "", "peer address (host:port), omit to discover via LAN multicast")
 	fs.Parse(args)
 
 	if *addr == "" {
-		fmt.Fprintln(os.Stderr, "dial: --peer is required")
-		os.Exit(1)
+		fmt.Println("no --peer given, searching for peers on LAN...")
+		discovered, err := transport.Discover()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "discovery:", err)
+			os.Exit(1)
+		}
+		*addr = discovered
+		fmt.Printf("found peer: %s\n", *addr)
 	}
 
 	peer, err := transport.Dial(*addr)
@@ -70,7 +85,7 @@ func cmdDial(args []string) {
 		os.Exit(1)
 	}
 
-	runTUI(peer, ".")
+	runTUI(peer, "exchanged")
 }
 
 func runTUI(p *transport.Peer, recvDir string) {
