@@ -64,7 +64,7 @@ type tuiModel struct {
 
 func newTUIModel(swarm *transport.Swarm, recvDir string) tuiModel {
 	ti := textinput.New()
-	ti.Placeholder = "type a message, /sendfile <path>, /name <name>, or /quit"
+	ti.Placeholder = "type a message, /sendfile <path>, or /quit"
 	ti.Focus()
 	ti.Prompt = "> "
 
@@ -262,10 +262,6 @@ func (m tuiModel) handleInput(line string) []tea.Cmd {
 	case line == "/quit":
 		go m.swarm.Close()
 		cmds = append(cmds, tea.Quit)
-	case strings.HasPrefix(line, "/name "):
-		name := strings.TrimPrefix(line, "/name ")
-		m.swarm.SetName(name)
-		m.chats[m.currentFingerprint()] = append(m.chats[m.currentFingerprint()], styleSystem.Render(fmt.Sprintf("name set to %q", name)))
 	case strings.HasPrefix(line, "/sendfile "):
 		fp := m.currentFingerprint()
 		if fp == "" {

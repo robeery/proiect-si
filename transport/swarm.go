@@ -2,6 +2,7 @@ package transport
 
 import (
 	"fmt"
+	"net"
 	"sync"
 )
 
@@ -33,21 +34,32 @@ type ConnectedPeer struct {
 	Addr        string
 }
 
+type slot struct{}
+
 type Swarm struct {
 	listener  *Listener
 	announcer *Announcer
 	discovery *Discovery
 
-	mu      sync.RWMutex
-	peers   map[string]*ConnectedPeer
-	dialing map[string]bool
-	name    string
-	port    int
+	mu       sync.RWMutex
+	peers    map[string]*ConnectedPeer
+	hostPeer map[string]interface{}
+	dialing  map[string]bool
+	name     string
+	port     int
 
 	events    chan SwarmEvent
 	stop      chan struct{}
 	done      chan struct{}
 	closeOnce sync.Once
+}
+
+func hostFromAddr(addr string) string {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return addr
+	}
+	return host
 }
 
 func NewSwarm(port int, name string) (*Swarm, error) {
@@ -72,6 +84,7 @@ func NewSwarm(port int, name string) (*Swarm, error) {
 		announcer: ann,
 		discovery: disc,
 		peers:     make(map[string]*ConnectedPeer),
+		hostPeer:  make(map[string]interface{}),
 		dialing:   make(map[string]bool),
 		name:      name,
 		port:      port,
@@ -102,7 +115,11 @@ func (s *Swarm) Start() {
 
 func (s *Swarm) Events() <-chan SwarmEvent { return s.events }
 
-func (s *Swarm) Name() string { return s.name }
+func (s *Swarm) Name() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.name
+}
 
 func (s *Swarm) SetName(name string) {
 	s.mu.Lock()
@@ -151,7 +168,7 @@ func (s *Swarm) acceptLoop() {
 			if !ok {
 				return
 			}
-			go s.handleNewPeer(peer)
+			go s.handleNewPeer(peer, false)
 		}
 	}
 }
@@ -171,18 +188,18 @@ func (s *Swarm) discoverLoop() {
 }
 
 func (s *Swarm) dialPeer(addr string) {
+	host := hostFromAddr(addr)
 	s.mu.Lock()
-	dialing := s.dialing[addr]
-	if dialing {
+	if s.dialing[host] || s.hostPeer[host] != nil {
 		s.mu.Unlock()
 		return
 	}
-	s.dialing[addr] = true
+	s.dialing[host] = true
 	s.mu.Unlock()
 
 	defer func() {
 		s.mu.Lock()
-		delete(s.dialing, addr)
+		delete(s.dialing, host)
 		s.mu.Unlock()
 	}()
 
@@ -191,31 +208,54 @@ func (s *Swarm) dialPeer(addr string) {
 		s.discovery.Forget(addr)
 		return
 	}
-	s.handleNewPeer(peer)
+	s.handleNewPeer(peer, true)
 }
 
-func (s *Swarm) handleNewPeer(peer *Peer) {
+func (s *Swarm) handleNewPeer(peer *Peer, isDialer bool) {
+	host := hostFromAddr(peer.RemoteAddr())
+
+	s.mu.Lock()
+	if s.hostPeer[host] != nil {
+		s.mu.Unlock()
+		peer.Close()
+		return
+	}
+	s.hostPeer[host] = &slot{}
+	s.mu.Unlock()
+
 	s.mu.RLock()
 	name := s.name
 	s.mu.RUnlock()
 
 	if err := peer.Send(EncodeHello(name)); err != nil {
+		s.mu.Lock()
+		delete(s.hostPeer, host)
+		s.mu.Unlock()
 		peer.Close()
 		return
 	}
 
 	helloData, ok := <-peer.Incoming()
 	if !ok {
+		s.mu.Lock()
+		delete(s.hostPeer, host)
+		s.mu.Unlock()
 		peer.Close()
 		return
 	}
 	typ, payload, err := DecodeMessage(helloData)
 	if err != nil || typ != MsgHello {
+		s.mu.Lock()
+		delete(s.hostPeer, host)
+		s.mu.Unlock()
 		peer.Close()
 		return
 	}
 	peerName, err := DecodeHello(payload)
 	if err != nil {
+		s.mu.Lock()
+		delete(s.hostPeer, host)
+		s.mu.Unlock()
 		peer.Close()
 		return
 	}
@@ -223,19 +263,16 @@ func (s *Swarm) handleNewPeer(peer *Peer) {
 	fp := peer.Fingerprint()
 	addr := peer.RemoteAddr()
 
-	s.mu.Lock()
-	if _, exists := s.peers[fp]; exists {
-		s.mu.Unlock()
-		peer.Close()
-		return
-	}
 	cp := &ConnectedPeer{
 		Peer:        peer,
 		Name:        peerName,
 		Fingerprint: fp,
 		Addr:        addr,
 	}
+
+	s.mu.Lock()
 	s.peers[fp] = cp
+	s.hostPeer[host] = cp
 	s.mu.Unlock()
 
 	select {
@@ -256,6 +293,7 @@ func (s *Swarm) readLoop(cp *ConnectedPeer) {
 	}
 	s.mu.Lock()
 	delete(s.peers, cp.Fingerprint)
+	delete(s.hostPeer, hostFromAddr(cp.Addr))
 	s.mu.Unlock()
 	s.discovery.Forget(cp.Addr)
 	select {

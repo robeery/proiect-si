@@ -1,0 +1,28 @@
+services:
+  peer1:
+    build:
+      context: ../..
+      dockerfile: tests/docker/Dockerfile
+    command: ["--name", "alice", "--port", "9001", "--test-discovery", "--test-timeout", "20s"]
+    networks:
+      - peernet
+
+  peer2:
+    build:
+      context: ../..
+      dockerfile: tests/docker/Dockerfile
+    command: ["--name", "bob", "--port", "9001", "--test-discovery", "--test-timeout", "20s"]
+    networks:
+      - peernet
+
+  peer3:
+    build:
+      context: ../..
+      dockerfile: tests/docker/Dockerfile
+    command: ["--name", "charlie", "--port", "9001", "--test-discovery", "--test-timeout", "20s"]
+    networks:
+      - peernet
+
+networks:
+  peernet:
+    driver: bridge
