@@ -120,3 +120,30 @@ func TestDecodeFileDoneTruncated(t *testing.T) {
 		t.Fatal("expected error for truncated FILE_DONE payload")
 	}
 }
+
+func TestEncodeDecodeHello(t *testing.T) {
+	cases := []string{"", "Alice", "unicode: ăîșțâ"}
+	for _, tc := range cases {
+		raw := transport.EncodeHello(tc)
+		typ, payload, err := transport.DecodeMessage(raw)
+		if err != nil {
+			t.Fatalf("DecodeMessage: %v", err)
+		}
+		if typ != transport.MsgHello {
+			t.Fatalf("wrong type: got %v want MsgHello", typ)
+		}
+		got, err := transport.DecodeHello(payload)
+		if err != nil {
+			t.Fatalf("DecodeHello: %v", err)
+		}
+		if got != tc {
+			t.Fatalf("hello mismatch: got %q want %q", got, tc)
+		}
+	}
+}
+
+func TestDecodeHelloTruncated(t *testing.T) {
+	if _, err := transport.DecodeHello([]byte{0x00}); err == nil {
+		t.Fatal("expected error for truncated HELLO payload")
+	}
+}

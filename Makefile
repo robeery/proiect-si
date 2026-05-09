@@ -1,13 +1,10 @@
-.PHONY: build run listen dial test clean
+.PHONY: build run test clean
 
 build:
 	go build -o peer .
 
-listen:
-	go run . listen --port 9001
-
-dial:
-	go run . dial --peer 127.0.0.1:9001
+run:
+	go run .
 
 test:
 	go test ./tests/... -timeout 120s -v

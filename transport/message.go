@@ -12,6 +12,7 @@ const (
 	MsgFileMeta  MsgType = 0x02
 	MsgFileChunk MsgType = 0x03
 	MsgFileDone  MsgType = 0x04
+	MsgHello     MsgType = 0x05
 )
 
 // FileMeta is sent once before the chunks to tell the receiver what to expect
@@ -49,6 +50,26 @@ func EncodeText(text string) []byte {
 
 func DecodeText(payload []byte) string {
 	return string(payload)
+}
+
+func EncodeHello(name string) []byte {
+	nameBytes := []byte(name)
+	out := make([]byte, 1+2+len(nameBytes))
+	out[0] = byte(MsgHello)
+	binary.BigEndian.PutUint16(out[1:], uint16(len(nameBytes)))
+	copy(out[3:], nameBytes)
+	return out
+}
+
+func DecodeHello(payload []byte) (string, error) {
+	if len(payload) < 2 {
+		return "", errors.New("transport: HELLO payload too short")
+	}
+	nameLen := int(binary.BigEndian.Uint16(payload[:2]))
+	if len(payload) < 2+nameLen {
+		return "", errors.New("transport: HELLO truncated name")
+	}
+	return string(payload[2 : 2+nameLen]), nil
 }
 
 // EncodeFileMeta layout: file_id(8) | total_chunks(4) | name_len(2) | name | size(8)

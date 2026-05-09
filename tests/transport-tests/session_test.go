@@ -104,7 +104,7 @@ func TestSessionPipe(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		var err error
-		clientKey, err = transport.ClientHandshake(clientConn)
+		clientKey, _, err = transport.ClientHandshake(clientConn)
 		if err != nil {
 			t.Errorf("client handshake: %v", err)
 		}
@@ -112,7 +112,7 @@ func TestSessionPipe(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		var err error
-		serverKey, err = transport.ServerHandshake(serverConn)
+		serverKey, _, err = transport.ServerHandshake(serverConn)
 		if err != nil {
 			t.Errorf("server handshake: %v", err)
 		}

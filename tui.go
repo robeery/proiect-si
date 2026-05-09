@@ -13,9 +13,12 @@ import (
 	"proiect-si/transport"
 )
 
-// tea.Msg types for async events
-type incomingMsgEvent struct{ data []byte }
-type connClosedEvent struct{}
+type peerJoinedEvent struct{ peer *transport.ConnectedPeer }
+type peerLeftEvent struct{ fingerprint string }
+type peerMessageEvent struct {
+	fingerprint string
+	data        []byte
+}
 type fileSentEvent struct {
 	path string
 	err  error
@@ -32,54 +35,74 @@ var (
 	styleHeader   = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
 	styleDivider  = lipgloss.NewStyle().Foreground(lipgloss.Color("236"))
 	styleProgress = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
+	styleSelected = lipgloss.NewStyle().Foreground(lipgloss.Color("#00FFFF")).Bold(true)
+	stylePeerName = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+	stylePeerList = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(0, 1)
+	styleInactive = lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
+)
+
+var (
+	gradientCyan, _ = colorful.Hex("#00FFFF")
+	gradientPink, _ = colorful.Hex("#FF69B4")
 )
 
 type tuiModel struct {
-	peer       *transport.Peer
-	viewport   viewport.Model
-	input      textinput.Model
-	recvr      *transport.FileReceiver
-	lines      []string
-	progressCh <-chan fileProgressEvent // nil when no transfer in progress
-	progress   string                  // rendered progress bar line, empty when idle
+	swarm     *transport.Swarm
+	recvDir   string
+	peerOrder []string
+	chats     map[string][]string
+	fileRecv  map[string]*transport.FileReceiver
+
+	selected   int
 	width      int
 	height     int
+	input      textinput.Model
+	viewport   viewport.Model
+	progressCh <-chan fileProgressEvent
+	progress   string
 }
 
-func newTUIModel(p *transport.Peer, recvDir string) tuiModel {
+func newTUIModel(swarm *transport.Swarm, recvDir string) tuiModel {
 	ti := textinput.New()
-	ti.Placeholder = "type a message, /sendfile <path>, or /quit"
+	ti.Placeholder = "type a message, /sendfile <path>, /name <name>, or /quit"
 	ti.Focus()
 	ti.Prompt = "> "
 
 	return tuiModel{
-		peer:  p,
-		input: ti,
-		recvr: transport.NewFileReceiver(recvDir),
+		swarm:    swarm,
+		recvDir:  recvDir,
+		chats:    make(map[string][]string),
+		fileRecv: make(map[string]*transport.FileReceiver),
+		input:    ti,
 	}
 }
 
 func (m tuiModel) Init() tea.Cmd {
 	return tea.Batch(
 		textinput.Blink,
-		listenForMsg(m.peer.Incoming()),
+		listenSwarmEvents(m.swarm.Events()),
 	)
 }
 
-// listenForMsg waits for one message from the peer channel then delivers it as a tea.Msg
-// re-issue this cmd after each message to keep the loop going
-func listenForMsg(ch <-chan []byte) tea.Cmd {
+func listenSwarmEvents(ch <-chan transport.SwarmEvent) tea.Cmd {
 	return func() tea.Msg {
-		data, ok := <-ch
+		ev, ok := <-ch
 		if !ok {
-			return connClosedEvent{}
+			return nil
 		}
-		return incomingMsgEvent{data}
+		switch e := ev.(type) {
+		case transport.PeerJoinedEvent:
+			return peerJoinedEvent{peer: e.Peer}
+		case transport.PeerLeftEvent:
+			return peerLeftEvent{fingerprint: e.Fingerprint}
+		case transport.PeerMessageEvent:
+			return peerMessageEvent{fingerprint: e.Fingerprint, data: e.Data}
+		default:
+			return nil
+		}
 	}
 }
 
-// listenFileProgress waits for one progress update from the channel
-// when the channel closes it returns nil which Bubble Tea ignores
 func listenFileProgress(ch <-chan fileProgressEvent) tea.Cmd {
 	return func() tea.Msg {
 		ev, ok := <-ch
@@ -90,8 +113,6 @@ func listenFileProgress(ch <-chan fileProgressEvent) tea.Cmd {
 	}
 }
 
-// sendFileCmd runs SendFileWithProgress in a background goroutine
-// progress updates are pushed to progressCh; fileSentEvent is returned when done
 func sendFileCmd(p *transport.Peer, path string, progressCh chan fileProgressEvent) tea.Cmd {
 	return func() tea.Msg {
 		err := transport.SendFileWithProgress(p, path, func(sent, total uint32) {
@@ -110,45 +131,74 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		// header + 2 dividers + progress line + input = 5 rows reserved
-		vpHeight := msg.Height - 5
+		leftWidth := 22
+		if m.width < 60 {
+			leftWidth = m.width / 4
+		}
+		rightWidth := m.width - leftWidth - 3
+		vpHeight := m.height - 5
 		if vpHeight < 1 {
 			vpHeight = 1
 		}
 		if m.viewport.Width == 0 {
-			m.viewport = viewport.New(msg.Width, vpHeight)
-			m.viewport.SetContent(joinLines(m.lines))
+			m.viewport = viewport.New(rightWidth, vpHeight)
+			m.viewport.SetContent("")
 			m.viewport.GotoBottom()
 		} else {
-			m.viewport.Width = msg.Width
+			m.viewport.Width = rightWidth
 			m.viewport.Height = vpHeight
 		}
 
-	case incomingMsgEvent:
-		// re-arm the listener immediately so we dont miss the next message
-		cmds = append(cmds, listenForMsg(m.peer.Incoming()))
-
-		typ, payload, err := transport.DecodeMessage(msg.data)
-		if err != nil {
-			m = m.appendLine(styleSystem.Render(fmt.Sprintf("decode error: %v", err)))
-			break
+	case peerJoinedEvent:
+		fp := msg.peer.Fingerprint
+		m.peerOrder = append(m.peerOrder, fp)
+		m.chats[fp] = []string{styleSystem.Render(fmt.Sprintf("connected to %s", msg.peer.Name))}
+		m.fileRecv[fp] = transport.NewFileReceiver(m.recvDir)
+		if len(m.peerOrder) == 1 {
+			m.selected = 0
 		}
-		switch typ {
-		case transport.MsgText:
-			label := stylePeer.Render(fmt.Sprintf("[%s]", m.peer.RemoteAddr()))
-			m = m.appendLine(label + " " + transport.DecodeText(payload))
-		case transport.MsgFileMeta, transport.MsgFileChunk, transport.MsgFileDone:
-			done, outPath, ferr := m.recvr.HandleMessage(msg.data)
-			if ferr != nil {
-				m = m.appendLine(styleSystem.Render(fmt.Sprintf("file error: %v", ferr)))
-			} else if done {
-				m = m.appendLine(styleSystem.Render(fmt.Sprintf("file received: %s", outPath)))
+		m = m.refreshViewport()
+		cmds = append(cmds, listenSwarmEvents(m.swarm.Events()))
+
+	case peerLeftEvent:
+		for i, fp := range m.peerOrder {
+			if fp == msg.fingerprint {
+				m.peerOrder = append(m.peerOrder[:i], m.peerOrder[i+1:]...)
+				break
 			}
 		}
+		delete(m.chats, msg.fingerprint)
+		delete(m.fileRecv, msg.fingerprint)
+		if m.selected >= len(m.peerOrder) && len(m.peerOrder) > 0 {
+			m.selected = len(m.peerOrder) - 1
+		}
+		m = m.refreshViewport()
+		cmds = append(cmds, listenSwarmEvents(m.swarm.Events()))
 
-	case connClosedEvent:
-		m = m.appendLine(styleSystem.Render("connection closed"))
-		return m, tea.Quit
+	case peerMessageEvent:
+		fp := msg.fingerprint
+		typ, payload, err := transport.DecodeMessage(msg.data)
+		if err != nil {
+			m.chats[fp] = append(m.chats[fp], styleSystem.Render(fmt.Sprintf("decode error: %v", err)))
+		} else {
+			switch typ {
+			case transport.MsgText:
+				peerName := m.peerName(fp)
+				label := stylePeer.Render(fmt.Sprintf("[%s]", peerName))
+				m.chats[fp] = append(m.chats[fp], label+" "+transport.DecodeText(payload))
+			case transport.MsgFileMeta, transport.MsgFileChunk, transport.MsgFileDone:
+				if recv, ok := m.fileRecv[fp]; ok {
+					done, outPath, ferr := recv.HandleMessage(msg.data)
+					if ferr != nil {
+						m.chats[fp] = append(m.chats[fp], styleSystem.Render(fmt.Sprintf("file error: %v", ferr)))
+					} else if done {
+						m.chats[fp] = append(m.chats[fp], styleSystem.Render(fmt.Sprintf("file received: %s", outPath)))
+					}
+				}
+			}
+		}
+		m = m.refreshViewport()
+		cmds = append(cmds, listenSwarmEvents(m.swarm.Events()))
 
 	case fileProgressEvent:
 		if m.progressCh != nil {
@@ -159,17 +209,31 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case fileSentEvent:
 		m.progress = ""
 		m.progressCh = nil
+		fp := m.currentFingerprint()
 		if msg.err != nil {
-			m = m.appendLine(styleSystem.Render(fmt.Sprintf("sendfile error: %v", msg.err)))
+			m.chats[fp] = append(m.chats[fp], styleSystem.Render(fmt.Sprintf("sendfile error: %v", msg.err)))
 		} else {
-			m = m.appendLine(styleSystem.Render(fmt.Sprintf("sent: %s", msg.path)))
+			m.chats[fp] = append(m.chats[fp], styleSystem.Render(fmt.Sprintf("sent: %s", msg.path)))
 		}
+		m = m.refreshViewport()
 
 	case tea.KeyMsg:
 		switch msg.Type {
 		case tea.KeyCtrlC, tea.KeyEsc:
-			m.peer.Close()
+			go m.swarm.Close()
 			return m, tea.Quit
+
+		case tea.KeyTab:
+			if len(m.peerOrder) > 0 {
+				m.selected = (m.selected + 1) % len(m.peerOrder)
+				m = m.refreshViewport()
+			}
+
+		case tea.KeyShiftTab:
+			if len(m.peerOrder) > 0 {
+				m.selected = (m.selected - 1 + len(m.peerOrder)) % len(m.peerOrder)
+				m = m.refreshViewport()
+			}
 
 		case tea.KeyEnter:
 			line := strings.TrimSpace(m.input.Value())
@@ -177,24 +241,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if line == "" {
 				break
 			}
-			switch {
-			case line == "/quit":
-				m.peer.Close()
-				return m, tea.Quit
-			case strings.HasPrefix(line, "/sendfile "):
-				path := strings.TrimPrefix(line, "/sendfile ")
-				m = m.appendLine(styleSystem.Render(fmt.Sprintf("sending %s...", path)))
-				progressCh := make(chan fileProgressEvent, 8)
-				m.progressCh = progressCh
-				cmds = append(cmds, sendFileCmd(m.peer, path, progressCh))
-				cmds = append(cmds, listenFileProgress(progressCh))
-			default:
-				label := styleYou.Render("[you]")
-				m = m.appendLine(label + " " + line)
-				if err := m.peer.Send(transport.EncodeText(line)); err != nil {
-					m = m.appendLine(styleSystem.Render(fmt.Sprintf("send error: %v", err)))
-				}
-			}
+			cmds = append(cmds, m.handleInput(line)...)
 		}
 	}
 
@@ -209,39 +256,139 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(cmds...)
 }
 
-func (m tuiModel) View() string {
-	if m.width == 0 {
-		return "initializing..."
+func (m tuiModel) handleInput(line string) []tea.Cmd {
+	var cmds []tea.Cmd
+	switch {
+	case line == "/quit":
+		go m.swarm.Close()
+		cmds = append(cmds, tea.Quit)
+	case strings.HasPrefix(line, "/name "):
+		name := strings.TrimPrefix(line, "/name ")
+		m.swarm.SetName(name)
+		m.chats[m.currentFingerprint()] = append(m.chats[m.currentFingerprint()], styleSystem.Render(fmt.Sprintf("name set to %q", name)))
+	case strings.HasPrefix(line, "/sendfile "):
+		fp := m.currentFingerprint()
+		if fp == "" {
+			break
+		}
+		path := strings.TrimPrefix(line, "/sendfile ")
+		peer := m.currentPeer()
+		if peer == nil {
+			break
+		}
+		m.chats[fp] = append(m.chats[fp], styleSystem.Render(fmt.Sprintf("sending %s...", path)))
+		progressCh := make(chan fileProgressEvent, 8)
+		m.progressCh = progressCh
+		cmds = append(cmds, sendFileCmd(peer.Peer, path, progressCh))
+		cmds = append(cmds, listenFileProgress(progressCh))
+	default:
+		fp := m.currentFingerprint()
+		if fp == "" {
+			break
+		}
+		m.chats[fp] = append(m.chats[fp], styleYou.Render("[you]")+" "+line)
+		if err := m.swarm.Send(fp, transport.EncodeText(line)); err != nil {
+			m.chats[fp] = append(m.chats[fp], styleSystem.Render(fmt.Sprintf("send error: %v", err)))
+		}
 	}
-	divider := styleDivider.Render(strings.Repeat("─", m.width))
-	title := gradientText("gommunication")
-	peer := styleHeader.Render(fmt.Sprintf("  peer: %s", m.peer.RemoteAddr()))
-	return title + peer + "\n" +
-		divider + "\n" +
-		m.viewport.View() + "\n" +
-		divider + "\n" +
-		m.progress + "\n" +
-		m.input.View()
+	return cmds
 }
 
-// appendLine adds a line to the history and scrolls the viewport to the bottom
-func (m tuiModel) appendLine(s string) tuiModel {
-	m.lines = append(m.lines, s)
-	m.viewport.SetContent(joinLines(m.lines))
+func (m tuiModel) currentFingerprint() string {
+	if len(m.peerOrder) == 0 || m.selected >= len(m.peerOrder) {
+		return ""
+	}
+	return m.peerOrder[m.selected]
+}
+
+func (m tuiModel) currentPeer() *transport.ConnectedPeer {
+	fp := m.currentFingerprint()
+	if fp == "" {
+		return nil
+	}
+	for _, p := range m.swarm.Peers() {
+		if p.Fingerprint == fp {
+			return p
+		}
+	}
+	return nil
+}
+
+func (m tuiModel) peerName(fp string) string {
+	for _, p := range m.swarm.Peers() {
+		if p.Fingerprint == fp {
+			return p.Name
+		}
+	}
+	return fp
+}
+
+func (m tuiModel) refreshViewport() tuiModel {
+	fp := m.currentFingerprint()
+	lines := m.chats[fp]
+	if lines == nil {
+		lines = []string{}
+	}
+	m.viewport.SetContent(strings.Join(lines, "\n"))
 	m.viewport.GotoBottom()
 	return m
 }
 
-func joinLines(lines []string) string {
-	return strings.Join(lines, "\n")
+func (m tuiModel) View() string {
+	if m.width == 0 {
+		return "initializing..."
+	}
+
+	leftWidth := 22
+	if m.width < 60 {
+		leftWidth = m.width / 4
+	}
+	rightWidth := m.width - leftWidth - 3
+	divider := styleDivider.Render(strings.Repeat("─", m.width))
+	title := gradientText("gommunication")
+
+	peerPanel := m.renderPeerList(leftWidth, m.height-4)
+	chatPanel := m.renderChat(rightWidth)
+
+	combined := lipgloss.JoinHorizontal(lipgloss.Top, peerPanel, chatPanel)
+	return title + "\n" + divider + "\n" + combined + "\n" + divider + "\n" + m.progress + "\n" + m.input.View()
 }
 
-var (
-	gradientCyan, _ = colorful.Hex("#00FFFF")
-	gradientPink, _ = colorful.Hex("#FF69B4")
-)
+func (m tuiModel) renderPeerList(width, height int) string {
+	var b strings.Builder
+	b.WriteString(styleHeader.Render("Peers"))
+	b.WriteString("\n")
 
-// renderProgressBar renders a cyan-to-pink gradient bar
+	if len(m.peerOrder) == 0 {
+		b.WriteString(styleInactive.Render("  waiting..."))
+	} else {
+		for i, fp := range m.peerOrder {
+			name := m.peerName(fp)
+			prefix := "  "
+			if i == m.selected {
+				prefix = styleSelected.Render("❯ ")
+				b.WriteString(styleSelected.Render(fmt.Sprintf("%s%s", prefix, name)))
+			} else {
+				b.WriteString(stylePeerName.Render(fmt.Sprintf("%s%s", prefix, name)))
+			}
+			b.WriteString("\n")
+		}
+	}
+
+	content := b.String()
+	style := lipgloss.NewStyle().
+		Width(width).
+		Height(height).
+		Border(lipgloss.RoundedBorder(), true, false, true, true).
+		Padding(0, 1)
+	return style.Render(content)
+}
+
+func (m tuiModel) renderChat(width int) string {
+	_ = width
+	return m.viewport.View()
+}
+
 func renderProgressBar(sent, total uint32, width int) string {
 	if total == 0 {
 		return ""
@@ -269,7 +416,6 @@ func renderProgressBar(sent, total uint32, width int) string {
 	return "[" + bar.String() + "]" + suffix
 }
 
-// gradientText renders s with a per-character cyan-to-pink gradient
 func gradientText(s string) string {
 	runes := []rune(s)
 	n := len(runes)
