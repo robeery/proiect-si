@@ -44,6 +44,7 @@ var (
 	styleHeader   = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
 	styleDivider  = lipgloss.NewStyle().Foreground(lipgloss.Color("236"))
 	styleProgress = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
+	styleUnread   = lipgloss.NewStyle().Foreground(lipgloss.Color("#FF69B4")).Bold(true)
 	styleSelected = lipgloss.NewStyle().Foreground(lipgloss.Color("#00FFFF")).Bold(true)
 	stylePeerName = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
 	stylePeerList = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(0, 1)
@@ -79,7 +80,7 @@ type tuiModel struct {
 
 func newTUIModel(swarm *transport.Swarm, recvDir string) tuiModel {
 	ti := textinput.New()
-	ti.Placeholder = "type a message, /sendfile <path>, or /quit"
+	ti.Placeholder = "type a message, /sendfile <path>, /quit, or press CTRL + O to pick file"
 	ti.Focus()
 	ti.Prompt = "> "
 
@@ -522,9 +523,9 @@ func (m tuiModel) peerListLine(prefix, name string, unread int, width int) strin
 	innerWidth := width - 2
 	baseWidth := lipgloss.Width(base)
 	if innerWidth < baseWidth+len(badge)+1 {
-		return base + " " + badge
+		return base + " " + styleUnread.Render(badge)
 	}
-	return base + strings.Repeat(" ", innerWidth-baseWidth-len(badge)) + badge
+	return base + strings.Repeat(" ", innerWidth-baseWidth-len(badge)) + styleUnread.Render(badge)
 }
 
 func (m tuiModel) renderChat(width int) string {

@@ -51,6 +51,7 @@ type filePickerModel struct {
 	selectedPath string
 	errMsg       string
 	showHidden   bool
+	showHelp     bool
 }
 
 func newFilePicker() (filePickerModel, error) {
@@ -64,7 +65,7 @@ func newFilePicker() (filePickerModel, error) {
 	search.Placeholder = "search files"
 	search.CharLimit = 256
 	search.Blur()
-	search.PromptStyle = styleHeader
+	search.PromptStyle = styleSelected
 	search.TextStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
 	search.PlaceholderStyle = styleInactive
 
@@ -72,8 +73,8 @@ func newFilePicker() (filePickerModel, error) {
 	delegate.ShowDescription = false
 	delegate.SetHeight(1)
 	delegate.Styles.NormalTitle = lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Padding(0, 0, 0, 1)
-	delegate.Styles.SelectedTitle = lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Bold(true).Padding(0, 0, 0, 1)
-	delegate.Styles.FilterMatch = lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Bold(true)
+	delegate.Styles.SelectedTitle = lipgloss.NewStyle().Foreground(lipgloss.Color("#00FFFF")).Bold(true).Padding(0, 0, 0, 1)
+	delegate.Styles.FilterMatch = lipgloss.NewStyle().Foreground(lipgloss.Color("#00FFFF")).Bold(true)
 
 	l := list.New([]list.Item{}, delegate, 0, 0)
 	l.SetShowTitle(false)
@@ -84,14 +85,15 @@ func newFilePicker() (filePickerModel, error) {
 	l.DisableQuitKeybindings()
 	l.SetStatusBarItemName("file", "files")
 	l.Styles.NoItems = lipgloss.NewStyle().Foreground(lipgloss.Color("243")).SetString("no files")
-	l.Styles.FilterPrompt = styleHeader
+	l.Styles.FilterPrompt = styleSelected
 	l.Styles.Title = styleHeader
 	l.Styles.TitleBar = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
 
 	return filePickerModel{
-		cwd:    startDir,
-		list:   l,
-		search: search,
+		cwd:      startDir,
+		list:     l,
+		search:   search,
+		showHelp: true,
 	}, err
 }
 
@@ -102,14 +104,15 @@ func (m filePickerModel) Init() tea.Cmd {
 func (m *filePickerModel) SetSize(width, height int) {
 	m.width = width
 	m.height = height
+	listWidth, _ := m.layout()
 
 	listHeight := height - 5
 	if listHeight < 1 {
 		listHeight = 1
 	}
-	m.list.SetSize(width, listHeight)
+	m.list.SetSize(listWidth, listHeight)
 
-	inputWidth := width - 3
+	inputWidth := listWidth - 3
 	if inputWidth < 0 {
 		inputWidth = 0
 	}
@@ -133,22 +136,32 @@ func (m filePickerModel) View() string {
 	if width < 1 {
 		width = 1
 	}
+	m.width = width
+	browserWidth, helpWidth := m.layout()
 
 	headerText := "Files"
-	header := lipgloss.NewStyle().Width(width).Render(styleHeader.Render(headerText))
+	header := lipgloss.NewStyle().Width(browserWidth).Render(styleHeader.Render(headerText))
 	hiddenLabel := "hidden:off"
 	if m.showHidden {
 		hiddenLabel = "hidden:on"
 	}
-	pathLine := lipgloss.NewStyle().Width(width).Render(styleInactive.Render(m.cwd + " · " + hiddenLabel))
-	search := lipgloss.NewStyle().Width(width).Render(m.search.View())
+	helpLabel := "help:off"
+	if m.showHelp && helpWidth > 0 {
+		helpLabel = "help:on"
+	}
+	pathLine := lipgloss.NewStyle().Width(browserWidth).Render(styleInactive.Render(m.cwd + " · " + hiddenLabel + " · " + helpLabel + " (?)"))
+	search := lipgloss.NewStyle().Width(browserWidth).Render(m.search.View())
 
 	body := m.list.View()
 	if m.errMsg != "" {
 		body = styleSystem.Render("error: "+m.errMsg) + "\n" + body
 	}
 
-	content := lipgloss.JoinVertical(lipgloss.Left, header, pathLine, search, body)
+	browser := lipgloss.JoinVertical(lipgloss.Left, header, pathLine, search, body)
+	content := browser
+	if m.showHelp && helpWidth > 0 {
+		content = lipgloss.JoinHorizontal(lipgloss.Top, browser, m.renderHelp(helpWidth))
+	}
 	border := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color("236")).
@@ -182,6 +195,14 @@ func (m filePickerModel) Update(msg tea.Msg) (filePickerModel, tea.Cmd) {
 				cmds = append(cmds, cmd)
 			}
 			return m, tea.Batch(cmds...)
+		case tea.KeyRight:
+			if !m.search.Focused() {
+				cmd := m.enterSelectedDir()
+				if cmd != nil {
+					cmds = append(cmds, cmd)
+				}
+				return m, tea.Batch(cmds...)
+			}
 		case tea.KeyBackspace, tea.KeyCtrlH:
 			if m.search.Value() == "" {
 				cmd := m.goUp()
@@ -211,6 +232,12 @@ func (m filePickerModel) Update(msg tea.Msg) (filePickerModel, tea.Cmd) {
 			m.showHidden = !m.showHidden
 			return m, readDirCmd(m.cwd)
 		}
+
+		if keyMsg.Type == tea.KeyRunes && string(keyMsg.Runes) == "?" && !m.search.Focused() {
+			m.showHelp = !m.showHelp
+			m.SetSize(m.width, m.height)
+			return m, tea.Batch(cmds...)
+		}
 	}
 
 	prevSearch := m.search.Value()
@@ -229,6 +256,52 @@ func (m filePickerModel) Update(msg tea.Msg) (filePickerModel, tea.Cmd) {
 	cmds = append(cmds, listCmd)
 
 	return m, tea.Batch(cmds...)
+}
+
+func (m filePickerModel) layout() (browserWidth, helpWidth int) {
+	if !m.showHelp {
+		return m.width, 0
+	}
+	return filePickerLayout(m.width)
+}
+
+func filePickerLayout(width int) (browserWidth, helpWidth int) {
+	browserWidth = width
+	if width < 72 {
+		return browserWidth, 0
+	}
+
+	helpWidth = 36
+	browserWidth = width - helpWidth - 2
+	if browserWidth < 28 {
+		return width, 0
+	}
+	return browserWidth, helpWidth
+}
+
+func (m filePickerModel) renderHelp(width int) string {
+	keyStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#FF69B4")).Bold(true).Width(11)
+	action := lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+	lines := []string{styleSelected.Render("Navigation")}
+	rows := [][2]string{
+		{"↑/↓", "select"},
+		{"→", "open folder"},
+		{"Enter", "open / send file"},
+		{"Backspace", "parent folder"},
+		{"/", "search files"},
+		{".", "hidden files"},
+		{"Esc", "close picker"},
+		{"?", "hide help"},
+	}
+	for _, row := range rows {
+		lines = append(lines, keyStyle.Render(row[0])+action.Render(row[1]))
+	}
+	return lipgloss.NewStyle().
+		Width(width-4).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("236")).
+		Padding(0, 1).
+		Render(strings.Join(lines, "\n"))
 }
 
 func (m *filePickerModel) setEntries(entries []os.DirEntry) tea.Cmd {
@@ -298,6 +371,21 @@ func (m *filePickerModel) activateSelection() (string, tea.Cmd) {
 		return "", readDirCmd(m.cwd)
 	}
 	return entry.path, nil
+}
+
+func (m *filePickerModel) enterSelectedDir() tea.Cmd {
+	item := m.list.SelectedItem()
+	if item == nil {
+		return nil
+	}
+	entry, ok := item.(fileItem)
+	if !ok || !entry.isDir {
+		return nil
+	}
+	m.cwd = entry.path
+	m.search.SetValue("")
+	m.search.Blur()
+	return readDirCmd(m.cwd)
 }
 
 func (m *filePickerModel) goUp() tea.Cmd {
