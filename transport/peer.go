@@ -21,9 +21,14 @@ type Peer struct {
 	done        chan struct{}
 	closeOnce   sync.Once
 	chatQueue   chan []byte
-	fileQueue   chan []byte
+	fileQueue   chan fileMessage
 	name        string
 	fingerprint string
+}
+
+type fileMessage struct {
+	plaintext []byte
+	written   chan error
 }
 
 func Dial(addr string) (*Peer, error) {
@@ -100,7 +105,7 @@ func newPeer(conn net.Conn, key [32]byte, fingerprint string) (*Peer, error) {
 		incoming:    make(chan []byte, 16),
 		done:        make(chan struct{}),
 		chatQueue:   make(chan []byte, chatQueueSize),
-		fileQueue:   make(chan []byte, fileQueueSize),
+		fileQueue:   make(chan fileMessage, fileQueueSize),
 		fingerprint: fingerprint,
 	}
 	go p.readLoop()
@@ -113,15 +118,52 @@ func (p *Peer) Send(plaintext []byte) error {
 }
 
 func (p *Peer) SendFileMessage(plaintext []byte) error {
-	return p.enqueue(p.fileQueue, plaintext)
+	written := make(chan error, 1)
+	msg := fileMessage{
+		plaintext: plaintext,
+		written:   written,
+	}
+
+	if p.isClosed() {
+		return ErrPeerClosed
+	}
+	select {
+	case <-p.done:
+		return ErrPeerClosed
+	case p.fileQueue <- msg:
+	}
+
+	select {
+	case err := <-written:
+		return err
+	case <-p.done:
+		select {
+		case err := <-written:
+			return err
+		default:
+			return ErrPeerClosed
+		}
+	}
 }
 
 func (p *Peer) enqueue(ch chan []byte, plaintext []byte) error {
+	if p.isClosed() {
+		return ErrPeerClosed
+	}
 	select {
 	case <-p.done:
 		return ErrPeerClosed
 	case ch <- plaintext:
 		return nil
+	}
+}
+
+func (p *Peer) isClosed() bool {
+	select {
+	case <-p.done:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -139,8 +181,6 @@ func (p *Peer) Close() error {
 	var err error
 	p.closeOnce.Do(func() {
 		close(p.done)
-		close(p.chatQueue)
-		close(p.fileQueue)
 		err = p.conn.Close()
 	})
 	return err
@@ -185,10 +225,12 @@ func (p *Peer) writeLoop() {
 					chatBurst = 0
 					continue
 				}
-				if err := p.session.WriteMessage(p.conn, msg); err != nil {
+				if err := p.session.WriteMessage(p.conn, msg.plaintext); err != nil {
+					completeFileMessage(msg, err)
 					p.Close()
 					return
 				}
+				completeFileMessage(msg, nil)
 				chatBurst = 0
 				continue
 			default:
@@ -231,13 +273,25 @@ func (p *Peer) writeLoop() {
 				chatBurst = 0
 				continue
 			}
-			if err := p.session.WriteMessage(p.conn, msg); err != nil {
+			if err := p.session.WriteMessage(p.conn, msg.plaintext); err != nil {
+				completeFileMessage(msg, err)
 				p.Close()
 				return
 			}
+			completeFileMessage(msg, nil)
 			chatBurst = 0
 		case <-p.done:
 			return
 		}
+	}
+}
+
+func completeFileMessage(msg fileMessage, err error) {
+	if msg.written == nil {
+		return
+	}
+	select {
+	case msg.written <- err:
+	default:
 	}
 }
