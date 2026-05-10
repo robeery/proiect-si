@@ -135,6 +135,34 @@ func sendFileCmd(p *transport.Peer, path string, progressCh chan fileProgressEve
 
 func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
+	if keyMsg, ok := msg.(tea.KeyMsg); ok && keyMsg.Type == tea.KeyCtrlO {
+		if m.pickerOpen {
+			m.pickerOpen = false
+			cmds = append(cmds, m.input.Focus())
+			return m, tea.Batch(cmds...)
+		}
+		m.pickerOpen = true
+		m.input.Blur()
+		if m.height > 0 {
+			m.picker.SetHeight(m.height - 5)
+		}
+		cmds = append(cmds, m.picker.Init())
+		return m, tea.Batch(cmds...)
+	}
+
+	if m.pickerOpen {
+		var pickerCmd tea.Cmd
+		m.picker, pickerCmd = m.picker.Update(msg)
+		cmds = append(cmds, pickerCmd)
+		if didSelect, path := m.picker.DidSelectFile(msg); didSelect {
+			m.pickerOpen = false
+			cmds = append(cmds, m.input.Focus())
+			var handleCmds []tea.Cmd
+			m, handleCmds = m.handleInput("/sendfile " + path)
+			cmds = append(cmds, handleCmds...)
+			m = m.refreshViewport()
+		}
+	}
 
 	switch msg := msg.(type) {
 
@@ -229,30 +257,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m = m.refreshViewport()
 
 	case tea.KeyMsg:
-		if msg.Type == tea.KeyCtrlO {
-			if m.pickerOpen {
-				m.pickerOpen = false
-				cmds = append(cmds, m.input.Focus())
-			} else {
-				m.pickerOpen = true
-				m.input.Blur()
-				cmds = append(cmds, m.picker.Init())
-			}
-			break
-		}
-
 		if m.pickerOpen {
-			var pickerCmd tea.Cmd
-			m.picker, pickerCmd = m.picker.Update(msg)
-			cmds = append(cmds, pickerCmd)
-			if didSelect, path := m.picker.DidSelectFile(msg); didSelect {
-				m.pickerOpen = false
-				cmds = append(cmds, m.input.Focus())
-				var handleCmds []tea.Cmd
-				m, handleCmds = m.handleInput("/sendfile " + path)
-				cmds = append(cmds, handleCmds...)
-				m = m.refreshViewport()
-			}
 			break
 		}
 
