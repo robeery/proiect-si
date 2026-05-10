@@ -241,7 +241,10 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if line == "" {
 				break
 			}
-			cmds = append(cmds, m.handleInput(line)...)
+			var handleCmds []tea.Cmd
+			m, handleCmds = m.handleInput(line)
+			cmds = append(cmds, handleCmds...)
+			m = m.refreshViewport()
 		}
 	}
 
@@ -256,7 +259,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(cmds...)
 }
 
-func (m tuiModel) handleInput(line string) []tea.Cmd {
+func (m tuiModel) handleInput(line string) (tuiModel, []tea.Cmd) {
 	var cmds []tea.Cmd
 	switch {
 	case line == "/quit":
@@ -287,7 +290,7 @@ func (m tuiModel) handleInput(line string) []tea.Cmd {
 			m.chats[fp] = append(m.chats[fp], styleSystem.Render(fmt.Sprintf("send error: %v", err)))
 		}
 	}
-	return cmds
+	return m, cmds
 }
 
 func (m tuiModel) currentFingerprint() string {
