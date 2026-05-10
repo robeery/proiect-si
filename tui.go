@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/filepicker"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -47,11 +48,13 @@ var (
 )
 
 type tuiModel struct {
-	swarm     *transport.Swarm
-	recvDir   string
-	peerOrder []string
-	chats     map[string][]string
-	fileRecv  map[string]*transport.FileReceiver
+	swarm      *transport.Swarm
+	recvDir    string
+	peerOrder  []string
+	chats      map[string][]string
+	fileRecv   map[string]*transport.FileReceiver
+	picker     filepicker.Model
+	pickerOpen bool
 
 	selected   int
 	width      int
@@ -68,11 +71,18 @@ func newTUIModel(swarm *transport.Swarm, recvDir string) tuiModel {
 	ti.Focus()
 	ti.Prompt = "> "
 
+	fp := filepicker.New()
+	fp.AutoHeight = false
+	fp.CurrentDirectory = "."
+	fp.DirAllowed = false
+	fp.FileAllowed = true
+
 	return tuiModel{
 		swarm:    swarm,
 		recvDir:  recvDir,
 		chats:    make(map[string][]string),
 		fileRecv: make(map[string]*transport.FileReceiver),
+		picker:   fp,
 		input:    ti,
 	}
 }
@@ -140,6 +150,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if vpHeight < 1 {
 			vpHeight = 1
 		}
+		m.picker.SetHeight(vpHeight)
 		if m.viewport.Width == 0 {
 			m.viewport = viewport.New(rightWidth, vpHeight)
 			m.viewport.SetContent("")
@@ -218,6 +229,33 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m = m.refreshViewport()
 
 	case tea.KeyMsg:
+		if msg.Type == tea.KeyCtrlO {
+			if m.pickerOpen {
+				m.pickerOpen = false
+				cmds = append(cmds, m.input.Focus())
+			} else {
+				m.pickerOpen = true
+				m.input.Blur()
+				cmds = append(cmds, m.picker.Init())
+			}
+			break
+		}
+
+		if m.pickerOpen {
+			var pickerCmd tea.Cmd
+			m.picker, pickerCmd = m.picker.Update(msg)
+			cmds = append(cmds, pickerCmd)
+			if didSelect, path := m.picker.DidSelectFile(msg); didSelect {
+				m.pickerOpen = false
+				cmds = append(cmds, m.input.Focus())
+				var handleCmds []tea.Cmd
+				m, handleCmds = m.handleInput("/sendfile " + path)
+				cmds = append(cmds, handleCmds...)
+				m = m.refreshViewport()
+			}
+			break
+		}
+
 		switch msg.Type {
 		case tea.KeyCtrlC, tea.KeyEsc:
 			go m.swarm.Close()
@@ -249,12 +287,16 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	var tiCmd tea.Cmd
-	m.input, tiCmd = m.input.Update(msg)
-	cmds = append(cmds, tiCmd)
+	if !m.pickerOpen {
+		m.input, tiCmd = m.input.Update(msg)
+		cmds = append(cmds, tiCmd)
+	}
 
 	var vpCmd tea.Cmd
-	m.viewport, vpCmd = m.viewport.Update(msg)
-	cmds = append(cmds, vpCmd)
+	if !m.pickerOpen {
+		m.viewport, vpCmd = m.viewport.Update(msg)
+		cmds = append(cmds, vpCmd)
+	}
 
 	return m, tea.Batch(cmds...)
 }
@@ -385,6 +427,9 @@ func (m tuiModel) renderPeerList(width, height int) string {
 
 func (m tuiModel) renderChat(width int) string {
 	_ = width
+	if m.pickerOpen {
+		return m.picker.View()
+	}
 	return m.viewport.View()
 }
 

@@ -46,6 +46,11 @@ func main() {
 		return
 	}
 
+	if err := ensureDir("exchanged"); err != nil {
+		fmt.Fprintln(os.Stderr, "exchanged:", err)
+		os.Exit(1)
+	}
+
 	prog := tea.NewProgram(
 		newTUIModel(swarm, "exchanged"),
 		tea.WithAltScreen(),
@@ -54,6 +59,10 @@ func main() {
 		fmt.Fprintln(os.Stderr, "tui:", err)
 		os.Exit(1)
 	}
+}
+
+func ensureDir(path string) error {
+	return os.MkdirAll(path, 0755)
 }
 
 func runDiscoveryTest(swarm *transport.Swarm, timeout time.Duration) {
