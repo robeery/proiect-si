@@ -61,6 +61,7 @@ type tuiModel struct {
 	peerOrder  []string
 	chats      map[string][]string
 	fileRecv   map[string]*transport.FileReceiver
+	unread     map[string]int
 	picker     filePickerModel
 	pickerOpen bool
 
@@ -89,6 +90,7 @@ func newTUIModel(swarm *transport.Swarm, recvDir string) tuiModel {
 		recvDir:          recvDir,
 		chats:            make(map[string][]string),
 		fileRecv:         make(map[string]*transport.FileReceiver),
+		unread:           make(map[string]int),
 		progress:         make(map[string]transferProgress),
 		sendProgressCh:   make(map[uint64]<-chan fileProgressEvent),
 		activeSendByPeer: make(map[string]uint64),
@@ -213,8 +215,10 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.peerOrder = append(m.peerOrder, fp)
 		m.chats[fp] = []string{styleSystem.Render(fmt.Sprintf("connected to %s", msg.peer.Name))}
 		m.fileRecv[fp] = transport.NewFileReceiver(m.recvDir)
+		m.unread[fp] = 0
 		if len(m.peerOrder) == 1 {
 			m.selected = 0
+			m = m.markCurrentRead()
 		}
 		m = m.refreshViewport()
 		cmds = append(cmds, listenSwarmEvents(m.swarm.Events()))
@@ -228,34 +232,41 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		delete(m.chats, msg.fingerprint)
 		delete(m.fileRecv, msg.fingerprint)
+		delete(m.unread, msg.fingerprint)
 		delete(m.progress, msg.fingerprint)
 		delete(m.activeSendByPeer, msg.fingerprint)
 		if m.selected >= len(m.peerOrder) && len(m.peerOrder) > 0 {
 			m.selected = len(m.peerOrder) - 1
+			m = m.markCurrentRead()
 		}
 		m = m.refreshViewport()
 		cmds = append(cmds, listenSwarmEvents(m.swarm.Events()))
 
 	case peerMessageEvent:
 		fp := msg.fingerprint
+		visibleUnread := false
 		typ, payload, err := transport.DecodeMessage(msg.data)
 		if err != nil {
 			m.chats[fp] = append(m.chats[fp], styleSystem.Render(fmt.Sprintf("decode error: %v", err)))
+			visibleUnread = true
 		} else {
 			switch typ {
 			case transport.MsgText:
 				peerName := m.peerName(fp)
 				label := stylePeer.Render(fmt.Sprintf("[%s]", peerName))
 				m.chats[fp] = append(m.chats[fp], label+" "+transport.DecodeText(payload))
+				visibleUnread = true
 			case transport.MsgFileMeta, transport.MsgFileChunk, transport.MsgFileDone:
 				if recv, ok := m.fileRecv[fp]; ok {
 					done, outPath, recvProgress, ferr := recv.HandleMessageWithProgress(msg.data)
 					if ferr != nil {
 						m.chats[fp] = append(m.chats[fp], styleSystem.Render(fmt.Sprintf("file error: %v", ferr)))
 						delete(m.progress, fp)
+						visibleUnread = true
 					} else if done {
 						delete(m.progress, fp)
 						m.chats[fp] = append(m.chats[fp], styleSystem.Render(fmt.Sprintf("file received: %s", outPath)))
+						visibleUnread = true
 					} else if recvProgress != nil {
 						m.progress[fp] = transferProgress{
 							label:   "receiving",
@@ -264,6 +275,13 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						}
 					}
 				}
+			}
+		}
+		if visibleUnread {
+			if fp == m.currentFingerprint() {
+				m = m.markCurrentRead()
+			} else {
+				m.unread[fp]++
 			}
 		}
 		m = m.refreshViewport()
@@ -313,12 +331,14 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case tea.KeyTab:
 			if len(m.peerOrder) > 0 {
 				m.selected = (m.selected + 1) % len(m.peerOrder)
+				m = m.markCurrentRead()
 				m = m.refreshViewport()
 			}
 
 		case tea.KeyShiftTab:
 			if len(m.peerOrder) > 0 {
 				m.selected = (m.selected - 1 + len(m.peerOrder)) % len(m.peerOrder)
+				m = m.markCurrentRead()
 				m = m.refreshViewport()
 			}
 
@@ -427,6 +447,14 @@ func (m tuiModel) refreshViewport() tuiModel {
 	return m
 }
 
+func (m tuiModel) markCurrentRead() tuiModel {
+	fp := m.currentFingerprint()
+	if fp != "" {
+		m.unread[fp] = 0
+	}
+	return m
+}
+
 func (m tuiModel) View() string {
 	if m.width == 0 {
 		return "initializing..."
@@ -459,11 +487,13 @@ func (m tuiModel) renderPeerList(width, height int) string {
 		for i, fp := range m.peerOrder {
 			name := m.peerName(fp)
 			prefix := "  "
+			line := m.peerListLine(prefix, name, m.unread[fp], width)
 			if i == m.selected {
-				prefix = styleSelected.Render("❯ ")
-				b.WriteString(styleSelected.Render(fmt.Sprintf("%s%s", prefix, name)))
+				prefix = "❯ "
+				line = m.peerListLine(prefix, name, m.unread[fp], width)
+				b.WriteString(styleSelected.Render(line))
 			} else {
-				b.WriteString(stylePeerName.Render(fmt.Sprintf("%s%s", prefix, name)))
+				b.WriteString(stylePeerName.Render(line))
 			}
 			b.WriteString("\n")
 		}
@@ -476,6 +506,25 @@ func (m tuiModel) renderPeerList(width, height int) string {
 		Border(lipgloss.RoundedBorder(), true, false, true, true).
 		Padding(0, 1)
 	return style.Render(content)
+}
+
+func (m tuiModel) peerListLine(prefix, name string, unread int, width int) string {
+	base := prefix + name
+	if unread <= 0 {
+		return base
+	}
+
+	badge := fmt.Sprintf("%d", unread)
+	if unread > 9 {
+		badge = "9+"
+	}
+
+	innerWidth := width - 2
+	baseWidth := lipgloss.Width(base)
+	if innerWidth < baseWidth+len(badge)+1 {
+		return base + " " + badge
+	}
+	return base + strings.Repeat(" ", innerWidth-baseWidth-len(badge)) + badge
 }
 
 func (m tuiModel) renderChat(width int) string {
