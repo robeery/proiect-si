@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/filepicker"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -53,7 +52,7 @@ type tuiModel struct {
 	peerOrder  []string
 	chats      map[string][]string
 	fileRecv   map[string]*transport.FileReceiver
-	picker     filepicker.Model
+	picker     filePickerModel
 	pickerOpen bool
 
 	selected   int
@@ -71,11 +70,7 @@ func newTUIModel(swarm *transport.Swarm, recvDir string) tuiModel {
 	ti.Focus()
 	ti.Prompt = "> "
 
-	fp := filepicker.New()
-	fp.AutoHeight = false
-	fp.CurrentDirectory = "."
-	fp.DirAllowed = false
-	fp.FileAllowed = true
+	fp, _ := newFilePicker()
 
 	return tuiModel{
 		swarm:    swarm,
@@ -144,7 +139,12 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.pickerOpen = true
 		m.input.Blur()
 		if m.height > 0 {
-			m.picker.SetHeight(m.height - 5)
+			leftWidth := 22
+			if m.width < 60 {
+				leftWidth = m.width / 4
+			}
+			rightWidth := m.width - leftWidth - 3
+			m.picker.SetSize(rightWidth, m.height-5)
 		}
 		cmds = append(cmds, m.picker.Init())
 		return m, tea.Batch(cmds...)
@@ -154,7 +154,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var pickerCmd tea.Cmd
 		m.picker, pickerCmd = m.picker.Update(msg)
 		cmds = append(cmds, pickerCmd)
-		if didSelect, path := m.picker.DidSelectFile(msg); didSelect {
+		if path, ok := m.picker.TakeSelection(); ok {
 			m.pickerOpen = false
 			cmds = append(cmds, m.input.Focus())
 			var handleCmds []tea.Cmd
@@ -178,7 +178,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if vpHeight < 1 {
 			vpHeight = 1
 		}
-		m.picker.SetHeight(vpHeight)
+		m.picker.SetSize(rightWidth, vpHeight)
 		if m.viewport.Width == 0 {
 			m.viewport = viewport.New(rightWidth, vpHeight)
 			m.viewport.SetContent("")
@@ -258,6 +258,11 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		if m.pickerOpen {
+			if msg.Type == tea.KeyEsc {
+				m.pickerOpen = false
+				cmds = append(cmds, m.input.Focus())
+				break
+			}
 			break
 		}
 
