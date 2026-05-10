@@ -1,9 +1,18 @@
 package transport
 
 import (
+	"errors"
 	"net"
 	"sync"
 )
+
+const (
+	chatQueueSize  = 64
+	fileQueueSize  = 256
+	chatBurstLimit = 5
+)
+
+var ErrPeerClosed = errors.New("transport: peer closed")
 
 type Peer struct {
 	conn        net.Conn
@@ -11,7 +20,8 @@ type Peer struct {
 	incoming    chan []byte
 	done        chan struct{}
 	closeOnce   sync.Once
-	sendMu      sync.Mutex
+	chatQueue   chan []byte
+	fileQueue   chan []byte
 	name        string
 	fingerprint string
 }
@@ -89,16 +99,30 @@ func newPeer(conn net.Conn, key [32]byte, fingerprint string) (*Peer, error) {
 		session:     s,
 		incoming:    make(chan []byte, 16),
 		done:        make(chan struct{}),
+		chatQueue:   make(chan []byte, chatQueueSize),
+		fileQueue:   make(chan []byte, fileQueueSize),
 		fingerprint: fingerprint,
 	}
 	go p.readLoop()
+	go p.writeLoop()
 	return p, nil
 }
 
 func (p *Peer) Send(plaintext []byte) error {
-	p.sendMu.Lock()
-	defer p.sendMu.Unlock()
-	return p.session.WriteMessage(p.conn, plaintext)
+	return p.enqueue(p.chatQueue, plaintext)
+}
+
+func (p *Peer) SendFileMessage(plaintext []byte) error {
+	return p.enqueue(p.fileQueue, plaintext)
+}
+
+func (p *Peer) enqueue(ch chan []byte, plaintext []byte) error {
+	select {
+	case <-p.done:
+		return ErrPeerClosed
+	case ch <- plaintext:
+		return nil
+	}
 }
 
 func (p *Peer) Incoming() <-chan []byte { return p.incoming }
@@ -115,6 +139,8 @@ func (p *Peer) Close() error {
 	var err error
 	p.closeOnce.Do(func() {
 		close(p.done)
+		close(p.chatQueue)
+		close(p.fileQueue)
 		err = p.conn.Close()
 	})
 	return err
@@ -129,6 +155,87 @@ func (p *Peer) readLoop() {
 		}
 		select {
 		case p.incoming <- msg:
+		case <-p.done:
+			return
+		}
+	}
+}
+
+func (p *Peer) writeLoop() {
+	chatQ := p.chatQueue
+	fileQ := p.fileQueue
+	chatBurst := 0
+
+	for {
+		if chatQ == nil && fileQ == nil {
+			return
+		}
+
+		select {
+		case <-p.done:
+			return
+		default:
+		}
+
+		if chatBurst >= chatBurstLimit && fileQ != nil {
+			select {
+			case msg, ok := <-fileQ:
+				if !ok {
+					fileQ = nil
+					chatBurst = 0
+					continue
+				}
+				if err := p.session.WriteMessage(p.conn, msg); err != nil {
+					p.Close()
+					return
+				}
+				chatBurst = 0
+				continue
+			default:
+			}
+		}
+
+		if chatQ != nil && chatBurst < chatBurstLimit {
+			select {
+			case msg, ok := <-chatQ:
+				if !ok {
+					chatQ = nil
+					chatBurst = 0
+					continue
+				}
+				if err := p.session.WriteMessage(p.conn, msg); err != nil {
+					p.Close()
+					return
+				}
+				chatBurst++
+				continue
+			default:
+			}
+		}
+
+		select {
+		case msg, ok := <-chatQ:
+			if !ok {
+				chatQ = nil
+				chatBurst = 0
+				continue
+			}
+			if err := p.session.WriteMessage(p.conn, msg); err != nil {
+				p.Close()
+				return
+			}
+			chatBurst++
+		case msg, ok := <-fileQ:
+			if !ok {
+				fileQ = nil
+				chatBurst = 0
+				continue
+			}
+			if err := p.session.WriteMessage(p.conn, msg); err != nil {
+				p.Close()
+				return
+			}
+			chatBurst = 0
 		case <-p.done:
 			return
 		}

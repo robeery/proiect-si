@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 )
 
-const ChunkSize = 64 << 10 // 64 KiB
+const ChunkSize = 256 << 10 // 256 KiB
 
 // SendFile splits path into ChunkSize chunks, sends FILE_META then all
 // FILE_CHUNK messages then FILE_DONE with a SHA-256 of the whole file
@@ -46,7 +46,7 @@ func sendFile(p *Peer, path string, onProgress func(sent, total uint32)) error {
 		return err
 	}
 
-	if err := p.Send(EncodeFileMeta(FileMeta{
+	if err := p.SendFileMessage(EncodeFileMeta(FileMeta{
 		ID:          id,
 		TotalChunks: totalChunks,
 		Name:        filepath.Base(path),
@@ -65,7 +65,7 @@ func sendFile(p *Peer, path string, onProgress func(sent, total uint32)) error {
 			data := make([]byte, n)
 			copy(data, buf[:n])
 			h.Write(data)
-			if err := p.Send(EncodeFileChunk(FileChunk{
+			if err := p.SendFileMessage(EncodeFileChunk(FileChunk{
 				ID:    id,
 				Index: index,
 				Data:  data,
@@ -87,7 +87,7 @@ func sendFile(p *Peer, path string, onProgress func(sent, total uint32)) error {
 
 	var hash [32]byte
 	copy(hash[:], h.Sum(nil))
-	return p.Send(EncodeFileDone(id, hash))
+	return p.SendFileMessage(EncodeFileDone(id, hash))
 }
 
 // FileReceiver accumulates FILE_META / FILE_CHUNK / FILE_DONE messages and
