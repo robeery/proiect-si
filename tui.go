@@ -20,12 +20,21 @@ type peerMessageEvent struct {
 	data        []byte
 }
 type fileSentEvent struct {
-	path string
-	err  error
+	fingerprint string
+	transferID  uint64
+	path        string
+	err         error
 }
 type fileProgressEvent struct {
-	sent  uint32
-	total uint32
+	fingerprint string
+	transferID  uint64
+	sent        uint32
+	total       uint32
+}
+type transferProgress struct {
+	label   string
+	current uint32
+	total   uint32
 }
 
 var (
@@ -55,13 +64,16 @@ type tuiModel struct {
 	picker     filePickerModel
 	pickerOpen bool
 
-	selected   int
-	width      int
-	height     int
-	input      textinput.Model
-	viewport   viewport.Model
-	progressCh <-chan fileProgressEvent
-	progress   string
+	selected int
+	width    int
+	height   int
+	input    textinput.Model
+	viewport viewport.Model
+	progress map[string]transferProgress
+
+	sendProgressCh   map[uint64]<-chan fileProgressEvent
+	activeSendByPeer map[string]uint64
+	nextTransferID   uint64
 }
 
 func newTUIModel(swarm *transport.Swarm, recvDir string) tuiModel {
@@ -73,12 +85,15 @@ func newTUIModel(swarm *transport.Swarm, recvDir string) tuiModel {
 	fp, _ := newFilePicker()
 
 	return tuiModel{
-		swarm:    swarm,
-		recvDir:  recvDir,
-		chats:    make(map[string][]string),
-		fileRecv: make(map[string]*transport.FileReceiver),
-		picker:   fp,
-		input:    ti,
+		swarm:            swarm,
+		recvDir:          recvDir,
+		chats:            make(map[string][]string),
+		fileRecv:         make(map[string]*transport.FileReceiver),
+		progress:         make(map[string]transferProgress),
+		sendProgressCh:   make(map[uint64]<-chan fileProgressEvent),
+		activeSendByPeer: make(map[string]uint64),
+		picker:           fp,
+		input:            ti,
 	}
 }
 
@@ -118,13 +133,18 @@ func listenFileProgress(ch <-chan fileProgressEvent) tea.Cmd {
 	}
 }
 
-func sendFileCmd(p *transport.Peer, path string, progressCh chan fileProgressEvent) tea.Cmd {
+func sendFileCmd(p *transport.Peer, fingerprint string, transferID uint64, path string, progressCh chan fileProgressEvent) tea.Cmd {
 	return func() tea.Msg {
 		err := transport.SendFileWithProgress(p, path, func(sent, total uint32) {
-			progressCh <- fileProgressEvent{sent, total}
+			progressCh <- fileProgressEvent{
+				fingerprint: fingerprint,
+				transferID:  transferID,
+				sent:        sent,
+				total:       total,
+			}
 		})
 		close(progressCh)
-		return fileSentEvent{path: path, err: err}
+		return fileSentEvent{fingerprint: fingerprint, transferID: transferID, path: path, err: err}
 	}
 }
 
@@ -208,6 +228,8 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		delete(m.chats, msg.fingerprint)
 		delete(m.fileRecv, msg.fingerprint)
+		delete(m.progress, msg.fingerprint)
+		delete(m.activeSendByPeer, msg.fingerprint)
 		if m.selected >= len(m.peerOrder) && len(m.peerOrder) > 0 {
 			m.selected = len(m.peerOrder) - 1
 		}
@@ -227,11 +249,19 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.chats[fp] = append(m.chats[fp], label+" "+transport.DecodeText(payload))
 			case transport.MsgFileMeta, transport.MsgFileChunk, transport.MsgFileDone:
 				if recv, ok := m.fileRecv[fp]; ok {
-					done, outPath, ferr := recv.HandleMessage(msg.data)
+					done, outPath, recvProgress, ferr := recv.HandleMessageWithProgress(msg.data)
 					if ferr != nil {
 						m.chats[fp] = append(m.chats[fp], styleSystem.Render(fmt.Sprintf("file error: %v", ferr)))
+						delete(m.progress, fp)
 					} else if done {
+						delete(m.progress, fp)
 						m.chats[fp] = append(m.chats[fp], styleSystem.Render(fmt.Sprintf("file received: %s", outPath)))
+					} else if recvProgress != nil {
+						m.progress[fp] = transferProgress{
+							label:   "receiving",
+							current: recvProgress.ReceivedChunks,
+							total:   recvProgress.TotalChunks,
+						}
 					}
 				}
 			}
@@ -240,15 +270,24 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, listenSwarmEvents(m.swarm.Events()))
 
 	case fileProgressEvent:
-		if m.progressCh != nil {
-			cmds = append(cmds, listenFileProgress(m.progressCh))
+		if progressCh, ok := m.sendProgressCh[msg.transferID]; ok {
+			cmds = append(cmds, listenFileProgress(progressCh))
 		}
-		m.progress = renderProgressBar(msg.sent, msg.total, m.width-2)
+		if activeID, ok := m.activeSendByPeer[msg.fingerprint]; ok && activeID == msg.transferID {
+			m.progress[msg.fingerprint] = transferProgress{
+				label:   "sending",
+				current: msg.sent,
+				total:   msg.total,
+			}
+		}
 
 	case fileSentEvent:
-		m.progress = ""
-		m.progressCh = nil
-		fp := m.currentFingerprint()
+		delete(m.sendProgressCh, msg.transferID)
+		if activeID, ok := m.activeSendByPeer[msg.fingerprint]; ok && activeID == msg.transferID {
+			delete(m.activeSendByPeer, msg.fingerprint)
+			delete(m.progress, msg.fingerprint)
+		}
+		fp := msg.fingerprint
 		if msg.err != nil {
 			m.chats[fp] = append(m.chats[fp], styleSystem.Render(fmt.Sprintf("sendfile error: %v", msg.err)))
 		} else {
@@ -328,9 +367,12 @@ func (m tuiModel) handleInput(line string) (tuiModel, []tea.Cmd) {
 			break
 		}
 		m.chats[fp] = append(m.chats[fp], styleSystem.Render(fmt.Sprintf("sending %s...", path)))
+		m.nextTransferID++
+		transferID := m.nextTransferID
 		progressCh := make(chan fileProgressEvent, 8)
-		m.progressCh = progressCh
-		cmds = append(cmds, sendFileCmd(peer.Peer, path, progressCh))
+		m.sendProgressCh[transferID] = progressCh
+		m.activeSendByPeer[fp] = transferID
+		cmds = append(cmds, sendFileCmd(peer.Peer, fp, transferID, path, progressCh))
 		cmds = append(cmds, listenFileProgress(progressCh))
 	default:
 		fp := m.currentFingerprint()
@@ -400,9 +442,10 @@ func (m tuiModel) View() string {
 
 	peerPanel := m.renderPeerList(leftWidth, m.height-4)
 	chatPanel := m.renderChat(rightWidth)
+	progressLine := m.renderCurrentProgress()
 
 	combined := lipgloss.JoinHorizontal(lipgloss.Top, peerPanel, chatPanel)
-	return title + "\n" + divider + "\n" + combined + "\n" + divider + "\n" + m.progress + "\n" + m.input.View()
+	return title + "\n" + divider + "\n" + combined + "\n" + divider + "\n" + progressLine + "\n" + m.input.View()
 }
 
 func (m tuiModel) renderPeerList(width, height int) string {
@@ -443,16 +486,34 @@ func (m tuiModel) renderChat(width int) string {
 	return m.viewport.View()
 }
 
-func renderProgressBar(sent, total uint32, width int) string {
+func (m tuiModel) renderCurrentProgress() string {
+	fp := m.currentFingerprint()
+	if fp == "" {
+		return ""
+	}
+	progress, ok := m.progress[fp]
+	if !ok {
+		return ""
+	}
+	return renderProgressBar(progress.label, progress.current, progress.total, m.width-2)
+}
+
+func renderProgressBar(label string, current, total uint32, width int) string {
 	if total == 0 {
 		return ""
 	}
-	pct := float64(sent) / float64(total)
+	pct := float64(current) / float64(total)
+	if pct > 1 {
+		pct = 1
+	}
 	barWidth := width / 2
 	if barWidth < 8 {
 		barWidth = 8
 	}
 	filled := int(pct * float64(barWidth))
+	if filled > barWidth {
+		filled = barWidth
+	}
 
 	var bar strings.Builder
 	for i := range barWidth {
@@ -466,7 +527,7 @@ func renderProgressBar(sent, total uint32, width int) string {
 	}
 
 	pink := lipgloss.NewStyle().Foreground(lipgloss.Color("#FF69B4"))
-	suffix := pink.Render(fmt.Sprintf(" %d/%d chunks (%.0f%%)", sent, total, pct*100))
+	suffix := pink.Render(fmt.Sprintf(" %s %d/%d chunks (%.0f%%)", label, current, total, pct*100))
 	return "[" + bar.String() + "]" + suffix
 }
 

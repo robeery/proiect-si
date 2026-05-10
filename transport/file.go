@@ -54,6 +54,9 @@ func sendFile(p *Peer, path string, onProgress func(sent, total uint32)) error {
 	})); err != nil {
 		return err
 	}
+	if onProgress != nil {
+		onProgress(0, totalChunks)
+	}
 
 	// hash the file as we read it so we dont need a second pass
 	h := sha256.New()
@@ -97,6 +100,13 @@ type FileReceiver struct {
 	transfers map[[8]byte]*incomingTransfer
 }
 
+type FileReceiveProgress struct {
+	ID             [8]byte
+	Name           string
+	ReceivedChunks uint32
+	TotalChunks    uint32
+}
+
 type incomingTransfer struct {
 	meta   FileMeta
 	chunks map[uint32][]byte
@@ -113,51 +123,70 @@ func NewFileReceiver(outputDir string) *FileReceiver {
 // returns (true, outPath, nil) when a complete file has been written and verified
 // returns (false, "", nil) for in-progress messages
 func (r *FileReceiver) HandleMessage(data []byte) (done bool, outPath string, err error) {
+	done, outPath, _, err = r.HandleMessageWithProgress(data)
+	return done, outPath, err
+}
+
+// HandleMessageWithProgress is like HandleMessage, but also reports transfer
+// progress after FILE_META and FILE_CHUNK messages.
+func (r *FileReceiver) HandleMessageWithProgress(data []byte) (done bool, outPath string, progress *FileReceiveProgress, err error) {
 	typ, payload, err := DecodeMessage(data)
 	if err != nil {
-		return false, "", err
+		return false, "", nil, err
 	}
 
 	switch typ {
 	case MsgFileMeta:
 		meta, err := DecodeFileMeta(payload)
 		if err != nil {
-			return false, "", err
+			return false, "", nil, err
 		}
 		r.transfers[meta.ID] = &incomingTransfer{
 			meta:   meta,
 			chunks: make(map[uint32][]byte),
 		}
+		return false, "", &FileReceiveProgress{
+			ID:             meta.ID,
+			Name:           meta.Name,
+			ReceivedChunks: 0,
+			TotalChunks:    meta.TotalChunks,
+		}, nil
 
 	case MsgFileChunk:
 		chunk, err := DecodeFileChunk(payload)
 		if err != nil {
-			return false, "", err
+			return false, "", nil, err
 		}
 		tf := r.transfers[chunk.ID]
 		if tf == nil {
-			return false, "", fmt.Errorf("transport: FILE_CHUNK for unknown file id")
+			return false, "", nil, fmt.Errorf("transport: FILE_CHUNK for unknown file id")
 		}
 		tf.chunks[chunk.Index] = chunk.Data
+		return false, "", &FileReceiveProgress{
+			ID:             chunk.ID,
+			Name:           tf.meta.Name,
+			ReceivedChunks: uint32(len(tf.chunks)),
+			TotalChunks:    tf.meta.TotalChunks,
+		}, nil
 
 	case MsgFileDone:
 		id, wantHash, err := DecodeFileDone(payload)
 		if err != nil {
-			return false, "", err
+			return false, "", nil, err
 		}
 		tf := r.transfers[id]
 		if tf == nil {
-			return false, "", fmt.Errorf("transport: FILE_DONE for unknown file id")
+			return false, "", nil, fmt.Errorf("transport: FILE_DONE for unknown file id")
 		}
 		outPath, err = r.reassemble(tf, wantHash)
 		if err != nil {
-			return false, "", err
+			return false, "", nil, err
 		}
 		delete(r.transfers, id)
-		return true, outPath, nil
+		return true, outPath, nil, nil
 	}
 
-	return false, "", nil
+	return false, "", nil, nil
 }
 
 func (r *FileReceiver) reassemble(tf *incomingTransfer, wantHash [32]byte) (string, error) {
