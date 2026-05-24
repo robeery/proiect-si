@@ -56,6 +56,8 @@ var (
 	gradientPink, _ = colorful.Hex("#FF69B4")
 )
 
+const tuiChromeHeight = 5 // title, two dividers, progress line and input
+
 type tuiModel struct {
 	swarm      *transport.Swarm
 	recvDir    string
@@ -167,7 +169,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				leftWidth = m.width / 4
 			}
 			rightWidth := m.width - leftWidth - 3
-			m.picker.SetSize(rightWidth, m.height-5)
+			m.picker.SetSize(rightWidth, m.panelHeight())
 		}
 		cmds = append(cmds, m.picker.Init())
 		return m, tea.Batch(cmds...)
@@ -197,18 +199,15 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			leftWidth = m.width / 4
 		}
 		rightWidth := m.width - leftWidth - 3
-		vpHeight := m.height - 5
-		if vpHeight < 1 {
-			vpHeight = 1
-		}
-		m.picker.SetSize(rightWidth, vpHeight)
+		panelHeight := m.panelHeight()
+		m.picker.SetSize(rightWidth, panelHeight)
 		if m.viewport.Width == 0 {
-			m.viewport = viewport.New(rightWidth, vpHeight)
+			m.viewport = viewport.New(rightWidth, panelHeight)
 			m.viewport.SetContent("")
 			m.viewport.GotoBottom()
 		} else {
 			m.viewport.Width = rightWidth
-			m.viewport.Height = vpHeight
+			m.viewport.Height = panelHeight
 		}
 
 	case peerJoinedEvent:
@@ -456,6 +455,14 @@ func (m tuiModel) markCurrentRead() tuiModel {
 	return m
 }
 
+func (m tuiModel) panelHeight() int {
+	height := m.height - tuiChromeHeight
+	if height < 1 {
+		return 1
+	}
+	return height
+}
+
 func (m tuiModel) View() string {
 	if m.width == 0 {
 		return "initializing..."
@@ -469,7 +476,7 @@ func (m tuiModel) View() string {
 	divider := styleDivider.Render(strings.Repeat("─", m.width))
 	title := gradientText("gommunication")
 
-	peerPanel := m.renderPeerList(leftWidth, m.height-4)
+	peerPanel := m.renderPeerList(leftWidth, m.panelHeight())
 	chatPanel := m.renderChat(rightWidth)
 	progressLine := m.renderCurrentProgress()
 
@@ -501,10 +508,14 @@ func (m tuiModel) renderPeerList(width, height int) string {
 	}
 
 	content := b.String()
+	contentHeight := height - 2
+	if contentHeight < 1 {
+		contentHeight = 1
+	}
 	style := lipgloss.NewStyle().
 		Width(width).
-		Height(height).
-		Border(lipgloss.RoundedBorder(), true, false, true, true).
+		Height(contentHeight).
+		Border(lipgloss.RoundedBorder()).
 		Padding(0, 1)
 	return style.Render(content)
 }
