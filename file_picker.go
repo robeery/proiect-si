@@ -1,6 +1,8 @@
 package main
 
 import (
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -14,9 +16,11 @@ import (
 )
 
 type fileItem struct {
-	name  string
-	path  string
-	isDir bool
+	name      string
+	path      string
+	isDir     bool
+	size      int64
+	sizeKnown bool
 }
 
 func (f fileItem) FilterValue() string { return f.name }
@@ -33,6 +37,50 @@ func (f fileItem) Description() string {
 		return "dir"
 	}
 	return "file"
+}
+
+type filePickerDelegate struct{}
+
+func (filePickerDelegate) Height() int  { return 1 }
+func (filePickerDelegate) Spacing() int { return 0 }
+
+func (filePickerDelegate) Update(_ tea.Msg, _ *list.Model) tea.Cmd {
+	return nil
+}
+
+func (filePickerDelegate) Render(w io.Writer, m list.Model, index int, item list.Item) {
+	entry, ok := item.(fileItem)
+	if !ok {
+		return
+	}
+
+	prefix := "  "
+	style := lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+	if index == m.Index() {
+		prefix = "❯ "
+		style = styleSelected
+	}
+
+	name := entry.name
+	if entry.isDir {
+		name += "/"
+		name = truncateFilePickerLabel(name, m.Width()-lipgloss.Width(prefix))
+	} else {
+		size := "--"
+		if entry.sizeKnown {
+			size = formatFileSize(entry.size)
+		}
+		name = truncateFilePickerLabel(name, m.Width()-lipgloss.Width(prefix)-lipgloss.Width(size)-1)
+		line := prefix + name
+		gap := m.Width() - lipgloss.Width(line) - lipgloss.Width(size)
+		if gap < 1 {
+			gap = 1
+		}
+		fmt.Fprint(w, style.Render(line)+strings.Repeat(" ", gap)+styleInactive.Render(size))
+		return
+	}
+
+	fmt.Fprint(w, style.Render(prefix+name))
 }
 
 type filePickerDirMsg struct {
@@ -69,14 +117,7 @@ func newFilePicker() (filePickerModel, error) {
 	search.TextStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
 	search.PlaceholderStyle = styleInactive
 
-	delegate := list.NewDefaultDelegate()
-	delegate.ShowDescription = false
-	delegate.SetHeight(1)
-	delegate.Styles.NormalTitle = lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Padding(0, 0, 0, 1)
-	delegate.Styles.SelectedTitle = lipgloss.NewStyle().Foreground(lipgloss.Color("#00FFFF")).Bold(true).Padding(0, 0, 0, 1)
-	delegate.Styles.FilterMatch = lipgloss.NewStyle().Foreground(lipgloss.Color("#00FFFF")).Bold(true)
-
-	l := list.New([]list.Item{}, delegate, 0, 0)
+	l := list.New([]list.Item{}, filePickerDelegate{}, 0, 0)
 	l.SetShowTitle(false)
 	l.SetShowStatusBar(false)
 	l.SetShowPagination(false)
@@ -316,6 +357,13 @@ func (m *filePickerModel) setEntries(entries []os.DirEntry) tea.Cmd {
 			path:  filepath.Join(m.cwd, name),
 			isDir: entry.IsDir(),
 		})
+		if !items[len(items)-1].isDir {
+			info, err := entry.Info()
+			if err == nil {
+				items[len(items)-1].size = info.Size()
+				items[len(items)-1].sizeKnown = true
+			}
+		}
 	}
 
 	sort.Slice(items, func(i, j int) bool {
@@ -327,6 +375,42 @@ func (m *filePickerModel) setEntries(entries []os.DirEntry) tea.Cmd {
 
 	m.allItems = items
 	return m.applyFilter()
+}
+
+func formatFileSize(size int64) string {
+	if size < 1024 {
+		return fmt.Sprintf("%d B", size)
+	}
+
+	value := float64(size)
+	for _, unit := range []string{"KB", "MB", "GB", "TB"} {
+		value /= 1024
+		if value < 1024 || unit == "TB" {
+			if value >= 100 {
+				return fmt.Sprintf("%.0f %s", value, unit)
+			}
+			return fmt.Sprintf("%.1f %s", value, unit)
+		}
+	}
+	return ""
+}
+
+func truncateFilePickerLabel(value string, maxWidth int) string {
+	if maxWidth <= 0 {
+		return ""
+	}
+	if lipgloss.Width(value) <= maxWidth {
+		return value
+	}
+	if maxWidth <= 3 {
+		return strings.Repeat(".", maxWidth)
+	}
+
+	runes := []rune(value)
+	for len(runes) > 0 && lipgloss.Width(string(runes)+"...") > maxWidth {
+		runes = runes[:len(runes)-1]
+	}
+	return string(runes) + "..."
 }
 
 func (m *filePickerModel) applyFilter() tea.Cmd {
